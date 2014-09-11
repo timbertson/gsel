@@ -1,0 +1,3 @@
+gup-ocamlbuild:
+	*.byte
+	*.native
