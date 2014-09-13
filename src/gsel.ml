@@ -1,16 +1,8 @@
-open GMain
 open Lwt
 
-let enable_debug = try Unix.getenv "GSEL_DEBUG" = "1" with Not_found -> false
-let debug fmt =
-  if enable_debug
-    then (prerr_string "[gsel]: "; Printf.kfprintf (fun ch -> output_char ch '\n'; flush ch) stderr fmt)
-    else Printf.ifprintf stderr fmt
-
-type entry = {
-  text : string;
-  match_text : string;
-}
+(* local modules *)
+open Log
+open Search
 
 module SortedSet = struct
   type t = entry list
@@ -43,7 +35,21 @@ let all_states col = [
   `SELECTED, col;
 ]
 
-let main () =
+let markup_escape = Glib.Markup.escape_text
+
+let markup parts =
+  let is_highlight = ref true in
+  List.fold_left (fun acc part ->
+    let part = markup_escape part in
+    is_highlight := not !is_highlight;
+    acc ^ (if !is_highlight then
+      "<b>" ^ part ^ "</b>"
+    else part)
+  ) "" parts
+;;
+
+let main (): unit =
+  (* let () = enable_debug := try Unix.getenv "GSEL_DEBUG" = "1" with Not_found -> false in *)
   ignore (GMain.init ());
   Lwt_glib.install ();
 
@@ -51,7 +57,7 @@ let main () =
   (* let quit = Lwt.wakeup wakener in *)
 
   let colormap = Gdk.Color.get_system_colormap () in
-  let text_color = Gdk.Color.alloc ~colormap (grey 190) in
+  let text_color = Gdk.Color.alloc ~colormap (grey 210) in
 
   let window = GWindow.window
     ~border_width: 10
@@ -60,6 +66,8 @@ let main () =
     ~height: 500 (* XXX set window height based on size of entries *)
     ~decorated: false
     ~position: `CENTER
+    ~allow_grow:true
+    ~allow_shrink:true
     ~title:"gsel"
     () in
 
@@ -86,12 +94,12 @@ let main () =
     ~show:true
     ~enable_search:false
     ~packing:(vbox#pack ~expand:true) () in
-  (* tree_view#set_selection_mode `NONE; *)
+  (* TODO: ellipsize *)
   let column_view = GTree.view_column
     ~renderer:((GTree.cell_renderer_text [
       `FOREGROUND_GDK text_color;
       `SIZE_POINTS 12.0
-    ]), [("text", column)]) () in
+    ]), [("markup", column)]) () in
   ignore (tree_view#append_column (column_view));
   tree_view#set_headers_visible false;
   let tree_selection = tree_view#selection in
@@ -111,48 +119,38 @@ let main () =
     ) tree_selection#get_selected_rows
   ));
 
-  let matches needle haystack =
-    (* debug ("Looking for "^ needle ^" in "^haystack); *)
-    let nl = String.length needle in
-    let hl = String.length haystack in
-    let rec loop (nh, ni) (hh, hi) =
-      if nh = hh then (
-          (* move on to next search character *)
-          let ni = succ ni
-          and hi = succ hi in
-          if (ni = nl) then true else
-            if (hi = hl) then false else
-              loop (String.get needle ni, ni) (String.get haystack hi, hi)
-      ) else (
-          (* move on to next potential character *)
-          let hi = succ hi in
-          if (hi = hl) then false else
-            loop (nh, ni) (String.get haystack hi, hi)
-      )
-    in
-    if nl = 0 then true else
-      if hl = 0 then false else
-        loop (String.get needle 0, 0) (String.get haystack 0, 0)
-  in
-
   let redraw () =
     list_store#clear ();
-    shown_items := List.filter (fun item ->
-      matches !last_query item.match_text
-    ) !all_items;
+    let max_recall = 100 in
+    let max_display = 20 in
+    shown_items := begin let rec loop n items =
+      if n < 1 then [] else match items with
+        | [] -> []
+        | item :: tail ->
+          let matched = matches !last_query item.match_text in
+          if matched
+            then (highlight !last_query item) :: (loop (n-1) tail)
+            else loop n tail
+      in
+      (* collect max 100 matches *)
+      loop max_recall !all_items
+    end;
+
+    (* after grabbing the first 100 matches by length, score them *)
+
     debug "redraw! %d items of %d" (List.length !shown_items) (List.length !all_items);
     flush stdout;
     (* TODO: overwrite text, rather than always recreating each item? *)
     let rec loop i entries =
       match entries with
         | [] -> ()
-        | {text} :: tail ->
+        | result :: tail ->
           let added = list_store#append () in
-          list_store#set ~row:added ~column text;
+          list_store#set ~row:added ~column (markup result.result_parts);
           let i = i - 1 in
           if i > 0 then loop i tail else ()
     in
-    loop 20 !shown_items
+    loop max_display !shown_items
   in
 
   let update_query = fun text ->
@@ -180,7 +178,7 @@ let main () =
   let selection_made () =
     let selected = try Some (List.nth !shown_items !selected_index) with Failure _ -> None in
     begin match selected with
-      | Some entry -> print_endline entry.text; quit 0
+      | Some entry -> print_endline entry.result_text; quit 0
       | None -> ()
     end
   in
@@ -231,12 +229,9 @@ let main () =
 
 
   window#show ();
-  (* Main.main () *)
 
   Lwt_main.run (Lwt.join [
     gui_end;
     input_loop;
   ]);
   debug "ALL DONE"
-
-let _ = Printexc.print main ()

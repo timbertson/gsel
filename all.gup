@@ -1,2 +1,2 @@
 #!bash -eu
-gup -u gsel.{native,byte}
+gup -u main.{native,byte}
