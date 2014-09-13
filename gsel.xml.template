@@ -1,0 +1,25 @@
+<?xml version="1.0" ?>
+<?xml-stylesheet type='text/xsl' href='interface.xsl'?>
+<interface
+	xmlns="http://zero-install.sourceforge.net/2004/injector/interface"
+	xmlns:compile="http://zero-install.sourceforge.net/2006/namespaces/0compile"
+	xmlns:release="http://zero-install.sourceforge.net/2007/namespaces/0release">
+
+	<name>gsel</name>
+	<summary>gsel</summary>
+	<publish mode="ignore" xmlns="http://gfxmonk.net/dist/0install"/>
+	<description>
+	</description>
+	<feed-for interface="http://gfxmonk.net/dist/0install/gsel.xml"/>
+
+	<group>
+		<command name="run" path="bin/gsel">
+		</command>
+		<implementation version="{version}">
+			<manifest-digest/>
+			<archive href="{archive}"/>
+		</implementation>
+	</group>
+
+</interface>
+

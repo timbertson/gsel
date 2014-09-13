@@ -1,3 +1,5 @@
 gup-ocamlbuild:
 	*.byte
 	*.native
+gup-bin:
+	bin/gsel

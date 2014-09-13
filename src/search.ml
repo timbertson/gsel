@@ -3,10 +3,11 @@ open Log
 type entry = {
 	text : string;
 	match_text : string;
+	input_index : int;
 }
 
 type search_result = {
-	result_text : string;
+	result_source : entry;
 	result_parts : string list;
 }
 
@@ -60,5 +61,5 @@ let highlight query item =
 	let remaining = String.length match_text - (!text_i) in
 	(* debug "REM: subbing %d*%d of %s" (!text_i) remaining display_text; *)
 	rv := (String.sub display_text (!text_i) remaining) :: !rv;
-	{result_text = item.text; result_parts= List.rev !rv;}
+	{result_source = item; result_parts= List.rev !rv;}
 ;;

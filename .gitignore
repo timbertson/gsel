@@ -1,3 +1,5 @@
 *.native
 *.byte
-_build
+*-local.xml
+/_build
+/bin
