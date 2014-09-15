@@ -11,18 +11,23 @@ So you can do:
 ...gsel will pop up, and in a few keystrokes you can select the file you're after, and it'll be
 summarily opened in vim.
 
+It looks a bit like this:
+
+![gsel screenshot](/screenshots/sample1.png?raw=true)
+
 It's like the "matching" part of many text editors' "jump to file" feature,
 but it takes options from the lines of `stdin`, rather than being tied to a particular tool.
 
-This means that (with a little setup), you could use it to fuzzy-select all the things, including:
+This means that (with a little setup), you could use it to fuzzy-select All The Things, including:
 
  - files (from `git ls-files`, `ack -l`, or just `find`)
- - text editor buffers (if you can get your editor to pipe in the names of open buffers)
+ - text editor buffers
  - code symbols (using `ctags`)
+ - anything else you have a list of
 
 # Why?
 
-I liked the idea of selecta, but had some issues with it in practice:
+I liked the idea of `selecta`, but had some issues with it in practice:
 
  - It doesn't work outside a terminal. I use `gvim` as my main editor,
    so that made selecta a bit of a dead-end.
@@ -55,7 +60,7 @@ The result is in `bin/gsel`
 
 # Known issues:
 
-The gui is not very polished.
+The gui has a lot of rough edges.
 
 There's no integration with editors.
 
