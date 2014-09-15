@@ -8,7 +8,7 @@ type entry = {
 
 type search_result = {
 	result_source : entry;
-	result_score : int;
+	result_score : float;
 	match_indexes : int list;
 }
 
@@ -94,9 +94,19 @@ let score query item =
 				end
 		end
 	in
-	if match_text = "" then None else match query with
+	let raw_score = if match_text = "" then None else match query with
 		| [] -> Some (0, [])
 		| q::uery -> score_at 0 false q uery
+	in
+	match raw_score with
+		| None -> None
+		| Some (score, matches) ->
+				(* (* an extra 1 point of match is outweighed by 5 additional characters *) *)
+				let score = float_of_int score in
+				let len = float_of_int (String.length match_text) in
+				let len_penalty = len /. 5.0 in
+				debug "docking score %f by %f" score len_penalty;
+				Some (score -. len_penalty, matches)
 
 
 module Highlight = struct

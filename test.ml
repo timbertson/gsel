@@ -57,7 +57,7 @@ let score query text =
 	let rv = Search.score query (build_entry text) in
 	begin match rv with
 		| Some (score, matches) ->
-			Printf.eprintf "got matches: [%s]\n" (String.concat "," (List.map string_of_int matches))
+			Printf.eprintf "got score = %0.3f, matches = [%s]\n" score (String.concat "," (List.map string_of_int matches))
 		| _ -> ()
 	end;
 	rv
@@ -159,6 +159,15 @@ let () =
 
 			"prefers adjacent letters" >:: (fun _ ->
 				assert_better ~query:"ab" "abcd" "acbd"
+			);
+
+			"prefers word leaders" >:: (fun _ ->
+				assert_better ~query:"c" "cd" "dc"
+			);
+
+			"a better match stops being preferred if it adds 5 characters per point" >:: (fun _ ->
+				assert_better ~query:"c" "cd123" "dc";
+				assert_better ~query:"c" "dc" "cd123456";
 			);
 		];
 
