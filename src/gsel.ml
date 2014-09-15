@@ -45,7 +45,9 @@ let markup str indexes =
 	let open Search.Highlight in
 	let parts = Search.highlight str indexes in
 	let parts = List.map (function
-		| Highlighted s -> "<b>" ^ markup_escape s ^ "</b>"
+		(* XXX define a style somewhere or use programmatic style attributes rather than
+		 * building ugly html strings *)
+		| Highlighted s -> "<span color=\"#eeeeee\" weight=\"bold\" underline=\"low\" underline_color=\"#888888\">" ^ markup_escape s ^ "</span>"
 		| Plain s -> markup_escape s
 	) parts in
 	String.concat "" parts
@@ -125,7 +127,8 @@ let main (): unit =
 	let column_view = GTree.view_column
 		~renderer:((GTree.cell_renderer_text [
 			`FOREGROUND_GDK text_color;
-			`SIZE_POINTS 12.0
+			`SIZE_POINTS 12.0;
+			`YPAD 5;
 		]), [("markup", column)]) () in
 	ignore (tree_view#append_column (column_view));
 	tree_view#set_headers_visible false;
