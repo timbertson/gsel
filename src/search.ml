@@ -94,7 +94,7 @@ let score query item =
 				end
 		end
 	in
-	match query with
+	if match_text = "" then None else match query with
 		| [] -> Some (0, [])
 		| q::uery -> score_at 0 false q uery
 
