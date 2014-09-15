@@ -35,17 +35,20 @@ let all_states col = [
 	`SELECTED, col;
 ]
 
+let rec list_take n lst = if n = 0 then [] else match lst with
+	| x::xs -> x :: list_take (n-1) xs
+	| [] -> []
+
 let markup_escape = Glib.Markup.escape_text
 
-let markup parts =
-	let is_highlight = ref true in
-	List.fold_left (fun acc part ->
-		let part = markup_escape part in
-		is_highlight := not !is_highlight;
-		acc ^ (if !is_highlight then
-			"<b>" ^ part ^ "</b>"
-		else part)
-	) "" parts
+let markup str indexes =
+	let open Search.Highlight in
+	let parts = Search.highlight str indexes in
+	let parts = List.map (function
+		| Highlighted s -> "<b>" ^ markup_escape s ^ "</b>"
+		| Plain s -> markup_escape s
+	) parts in
+	String.concat "" parts
 ;;
 
 let main (): unit =
@@ -145,22 +148,24 @@ let main (): unit =
 
 	let redraw () =
 		list_store#clear ();
-		let max_recall = 100 in
+		let max_recall = 200 in
 		let max_display = 20 in
-		shown_items := begin let rec loop n items =
+
+		(* collect max 100 matches *)
+		let recalled = let rec loop n items =
 			if n < 1 then [] else match items with
 				| [] -> []
 				| item :: tail ->
-					let matched = matches !last_query item.match_text in
-					if matched
-						then (highlight !last_query item) :: (loop (n-1) tail)
-						else loop n tail
+					match Search.score !last_query item with
+						| Some (score, indexes) -> {result_source = item; result_score = score; match_indexes = indexes} :: (loop (n-1) tail)
+						| None -> loop n tail
 			in
-			(* collect max 100 matches *)
 			loop max_recall !all_items
-		end;
+		in
 
-		(* after grabbing the first 100 matches by length, score them *)
+		(* after grabbing the first 100 matches by length, score them in descending order *)
+		let ordered = List.stable_sort (fun a b -> compare (b.result_score) (a.result_score)) recalled in
+		shown_items := list_take max_display ordered;
 
 		debug "redraw! %d items of %d" (List.length !shown_items) (List.length !all_items);
 		flush stdout;
@@ -170,7 +175,7 @@ let main (): unit =
 				| [] -> ()
 				| result :: tail ->
 					let added = list_store#append () in
-					list_store#set ~row:added ~column (markup result.result_parts);
+					list_store#set ~row:added ~column (markup result.result_source.text result.match_indexes);
 					let i = i - 1 in
 					if i > 0 then loop i tail else ()
 		in
