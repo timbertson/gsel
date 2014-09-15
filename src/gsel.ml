@@ -151,10 +151,10 @@ let main (): unit =
 
 	let redraw () =
 		list_store#clear ();
-		let max_recall = 200 in
+		let max_recall = 2000 in
 		let max_display = 20 in
 
-		(* collect max 100 matches *)
+		(* collect max_recall matches *)
 		let recalled = let rec loop n items =
 			if n < 1 then [] else match items with
 				| [] -> []
