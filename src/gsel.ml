@@ -193,16 +193,29 @@ let main (): unit =
 	let input_loop =
 		let redraw () = redraw (); return_unit in
 		let read_loop =
+			if Unix.isatty Unix.stdin then (
+				(* XXX set gui message? *)
+				prerr_endline "WARN: stdin is a terminal"
+			);
 			let lines = Lwt_io.read_lines Lwt_io.stdin in
 			let i = ref 0 in
-			Lwt_stream.iter (fun line ->
+			let nonempty_line = ref false in
+			lwt () = Lwt_stream.iter (fun line ->
+				if not !nonempty_line && String.length line > 0 then
+					nonempty_line := true
+				;
 				all_items := SortedSet.add !all_items {
 					text=line;
 					match_text=String.lowercase line;
 					input_index=(!i);
 				};
 				i := !i+1;
-			) lines
+			) lines in
+			if not !nonempty_line then (
+				prerr_endline "No input received";
+				quit 1
+			);
+			return_unit
 		in
 		let update_loop =
 			lwt () = Lwt_unix.sleep 0.5 in
