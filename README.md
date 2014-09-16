@@ -54,9 +54,7 @@ First get `opam`. Then do:
 
 ### Building:
 
-    $ ./tools/gup
-
-The result is in `bin/gsel`
+    $ ./tools/gup bin/gsel
 
 # Known issues:
 
