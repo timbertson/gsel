@@ -28,13 +28,6 @@ let rgb a b c = `RGB (a lsl 8, b lsl 8, c lsl 8)
 let grey l = let l = l lsl 8 in `RGB (l,l,l)
 let font_scale = 1204
 
-let all_states col = [
-	`INSENSITIVE, col;
-	`NORMAL, col;
-	`PRELIGHT, col;
-	`SELECTED, col;
-]
-
 let rec list_take n lst = if n = 0 then [] else match lst with
 	| x::xs -> x :: list_take (n-1) xs
 	| [] -> []
@@ -149,6 +142,24 @@ let main (): unit =
 		) tree_selection#get_selected_rows
 	));
 
+	let clear_selection () =
+		selected_index := 0;
+		tree_selection#unselect_all ()
+	in
+
+	let set_selection idx =
+		selected_index := idx;
+		tree_selection#select_path (GTree.Path.create [idx])
+	in
+
+	let shift_selection direction =
+		let new_idx = !selected_index + direction in
+		if new_idx < 0 || new_idx >= (List.length !shown_items) then
+			debug "ignoring shift_selection"
+		else
+			set_selection new_idx
+	in
+
 	let redraw () =
 		list_store#clear ();
 		let max_recall = 2000 in
@@ -166,7 +177,7 @@ let main (): unit =
 			loop max_recall !all_items
 		in
 
-		(* after grabbing the first 100 matches by length, score them in descending order *)
+		(* after grabbing the first `max_recall` matches by length, score them in descending order *)
 		let ordered = List.stable_sort (fun a b -> compare (b.result_score) (a.result_score)) recalled in
 		shown_items := list_take max_display ordered;
 
@@ -182,7 +193,13 @@ let main (): unit =
 					let i = i - 1 in
 					if i > 0 then loop i tail else ()
 		in
-		loop max_display !shown_items
+		loop max_display !shown_items;
+		if !shown_items = [] then (
+			clear_selection ()
+		) else
+			(* XXX do something smart to track the content of the selected item,
+			 * rather than just maintaining the selected index *)
+			set_selection !selected_index
 	in
 
 	let update_query = fun text ->
@@ -240,28 +257,44 @@ let main (): unit =
 		end
 	in
 
-	(* XXX are there constants, or do we really have to parse thse at runtime? *)
-	let (esc, _) = GtkData.AccelGroup.parse "Escape" in
-	let (ret, _) = GtkData.AccelGroup.parse "Return" in
-	ignore (window#event#connect#key_release (fun evt ->
+	let is_ctrl evt = GdkEvent.Key.state evt = [`CONTROL] in
+	(* why are this different to GdkKeysyms._J/_K ? *)
+	let (ctrl_j, _) = GtkData.AccelGroup.parse "<Ctrl>j" in
+	let (ctrl_k, _) = GtkData.AccelGroup.parse "<Ctrl>k" in
+
+	ignore (window#event#connect#key_press (fun evt ->
 		let key = GdkEvent.Key.keyval evt in
 		debug "Key: %d" key;
-		let () = match key with
-			|k when k=esc -> quit 1
-			|k when k=ret -> selection_made ()
-			| _ -> ()
-		in
-		true
+		let module K = GdkKeysyms in
+		match key with
+			|k when k=K._Escape -> quit 1; true
+			|k when k=K._Return -> selection_made (); true
+			|k when k=K._Up -> shift_selection (-1); true
+			|k when k=K._Down -> shift_selection 1; true
+			|k when k=K._Page_Up -> set_selection 0; true
+			|k when k=K._Page_Down -> set_selection (max 0 ((List.length !shown_items) - 1)); true
+			| _ ->
+				if is_ctrl evt then match key with
+					| k when k = ctrl_j -> shift_selection 1; true
+					| k when k = ctrl_k -> shift_selection (-1); true
+					| _ -> false
+				else false
 	));
 	ignore (tree_view#connect#row_activated (fun _ _ -> selection_made ()));
 	ignore (window#event#connect#delete (fun _ -> quit 1; true));
 	(* XXX set always-on-top *)
 	window#set_skip_taskbar_hint true;
 	(* window#set_skip_pager_hint true; *)
-	(* button#connect#clicked ~callback:(fun () -> prerr_endline "Hello World"); *)
-	(* button#connect#clicked ~callback:window#destroy; *)
 
 	(* stylings! *)
+	(* let all_states col = [ *)
+	(* 	`INSENSITIVE, col; *)
+	(* 	`NORMAL, col; *)
+	(* 	`PRELIGHT, col; *)
+	(* 	`SELECTED, col; *)
+	(* ] *)
+
+
 	let input_bg = grey 40 in
 
 	let ops = new GObj.misc_ops window#as_widget in
@@ -272,7 +305,19 @@ let main (): unit =
 
 	let ops = new GObj.misc_ops tree_view#as_widget in
 	ops#modify_base [`NORMAL, grey 25];
-	ops#modify_base [`SELECTED, rgb 37 89 134];
+	(* let selected_bg = rgb 37 89 134 in (* #255986 *) *)
+	(* let selected_bg = rgb 70 137 196 in (* #4689C4 *) *)
+	let selected_bg = rgb 61 85 106 in (* #3D556A *)
+	let selected_fg = rgb 255 255 255 in
+	ops#modify_base [
+		`SELECTED, selected_bg;
+		`ACTIVE, selected_bg;
+	];
+
+	ops#modify_text [
+		`SELECTED, selected_fg;
+		`ACTIVE, selected_fg;
+	];
 
 	let ops = new GObj.misc_ops input_box#as_widget in
 	ops#modify_bg [`NORMAL, input_bg];
