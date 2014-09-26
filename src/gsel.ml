@@ -336,4 +336,4 @@ let main (): unit =
 		gui_end;
 		input_loop;
 	]);
-	debug "ALL DONE"
+	debug "exiting"
