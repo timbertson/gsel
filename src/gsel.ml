@@ -1,5 +1,3 @@
-open Lwt
-
 (* local modules *)
 open Log
 open Search
@@ -46,6 +44,39 @@ let markup str indexes =
 	String.concat "" parts
 ;;
 
+let input_loop ~modify_all_items () =
+	if Unix.isatty Unix.stdin then (
+		(* XXX set gui message? *)
+		prerr_endline "WARN: stdin is a terminal"
+	);
+	let i = ref 0 in
+	let nonempty_line = ref false in
+	let rec loop () =
+		let line = try Some (input_line stdin) with End_of_file -> None in
+		match line with
+			| Some line ->
+				if not !nonempty_line && String.length line > 0 then
+					nonempty_line := true
+				;
+				modify_all_items (fun all_items ->
+					SortedSet.add all_items {
+						text=line;
+						match_text=String.lowercase line;
+						input_index=(!i);
+					}
+				);
+				i := !i+1;
+				loop ()
+			| None -> (debug "stdin complete"; ())
+	in
+	loop ();
+	if not !nonempty_line then (
+		prerr_endline "No input received";
+		exit 1
+	)
+;;
+
+
 let main (): unit =
 	let () = enable_debug := try Unix.getenv "GSEL_DEBUG" = "1" with Not_found -> false in
 
@@ -74,9 +105,6 @@ let main (): unit =
 
 
 	ignore (GMain.init ());
-	Lwt_glib.install ();
-
-	let gui_end, wakener = Lwt.wait () in
 
 	let colormap = Gdk.Color.get_system_colormap () in
 	let text_color = Gdk.Color.alloc ~colormap (grey 210) in
@@ -94,10 +122,8 @@ let main (): unit =
 		() in
 
 	let quit status : unit =
-		(* window#destroy; *)
-		Lwt.wakeup wakener ();
+		window#destroy ();
 		exit status
-		(* () *)
 	in
 
 	let vbox = GPack.vbox ~spacing: 10 ~packing:window#add () in
@@ -131,6 +157,16 @@ let main (): unit =
 	let shown_items = ref [] in
 	let last_query = ref "" in
 	let selected_index = ref 0 in
+
+	let with_mutex : (unit -> unit) -> unit =
+		let m = Mutex.create () in
+		fun fn ->
+			Mutex.lock m;
+			let () = try fn ()
+				with e -> (Mutex.unlock m; raise e) in
+			Mutex.unlock m
+	in
+
 
 	ignore (tree_selection#connect#changed ~callback:(fun () ->
 		List.iter (fun path ->
@@ -205,40 +241,6 @@ let main (): unit =
 	let update_query = fun text ->
 		last_query := String.lowercase text;
 		redraw ()
-	in
-
-	let input_loop =
-		let redraw () = redraw (); return_unit in
-		let read_loop =
-			if Unix.isatty Unix.stdin then (
-				(* XXX set gui message? *)
-				prerr_endline "WARN: stdin is a terminal"
-			);
-			let lines = Lwt_io.read_lines Lwt_io.stdin in
-			let i = ref 0 in
-			let nonempty_line = ref false in
-			lwt () = Lwt_stream.iter (fun line ->
-				if not !nonempty_line && String.length line > 0 then
-					nonempty_line := true
-				;
-				all_items := SortedSet.add !all_items {
-					text=line;
-					match_text=String.lowercase line;
-					input_index=(!i);
-				};
-				i := !i+1;
-			) lines in
-			if not !nonempty_line then (
-				prerr_endline "No input received";
-				quit 1
-			);
-			return_unit
-		in
-		let update_loop =
-			lwt () = Lwt_unix.sleep 0.5 in
-			redraw ()
-		in
-		Lwt.pick [read_loop; update_loop] >>= redraw
 	in
 
 	ignore (input#connect#notify_text update_query);
@@ -332,8 +334,27 @@ let main (): unit =
 
 	window#show ();
 
-	Lwt_main.run (Lwt.join [
-		gui_end;
-		input_loop;
-	]);
+	let input_complete = ref false in
+	let (_:Thread.t) = Thread.create (fun () ->
+		(* block these signals so that they are delivered to the main thread *)
+		let (_:int list) = Thread.sigmask Unix.SIG_BLOCK [Sys.sigint] in
+
+		(* input_loop can only mutate state via the stuff we pass it, so
+		 * make sure everything here is thread-safe *)
+		let modify_all_items fn = with_mutex (fun () ->
+			all_items := fn !all_items
+		) in
+		input_loop ~modify_all_items ();
+		input_complete := true;
+		GtkThread.sync redraw ();
+	) () in
+
+	(* install periodic redraw handler, which loops until input_loop is done *)
+	let (_:GMain.Timeout.id) = GMain.Timeout.add ~ms:500 ~callback:(fun () ->
+		if not !input_complete
+			then (debug "redraw (timer)"; redraw (); true)
+			else false
+	) in
+
+	GMain.main ();
 	debug "exiting"

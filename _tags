@@ -1,4 +1,4 @@
 # note: want lwt > 2.4.4
-true: package(lablgtk2,lwt,lwt.glib, lwt.syntax), debug, syntax(camlp4o)
+true: package(lablgtk2), debug, thread
 <test.*>: package(oUnit)
 "src": include
