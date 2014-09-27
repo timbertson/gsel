@@ -44,7 +44,7 @@ let markup str indexes =
 	String.concat "" parts
 ;;
 
-let input_loop ~modify_all_items () =
+let input_loop ~modify_all_items ~quit () =
 	if Unix.isatty Unix.stdin then (
 		(* XXX set gui message? *)
 		prerr_endline "WARN: stdin is a terminal"
@@ -72,7 +72,7 @@ let input_loop ~modify_all_items () =
 	loop ();
 	if not !nonempty_line then (
 		prerr_endline "No input received";
-		exit 1
+		quit 1
 	)
 ;;
 
@@ -109,24 +109,43 @@ let main (): unit =
 	let colormap = Gdk.Color.get_system_colormap () in
 	let text_color = Gdk.Color.alloc ~colormap (grey 210) in
 
-	let window = GWindow.window
+	let window = GWindow.dialog
 		~border_width: 10
 		~screen:(Gdk.Screen.default ())
 		~width: 600
 		~height: 500 (* XXX set window height based on size of entries *)
 		~decorated: false
-		~position: `CENTER
+		~show:false
+		~modal:false
+		~destroy_with_parent:true
+		~position: `CENTER_ON_PARENT
 		~allow_grow:true
 		~allow_shrink:true
+		~focus_on_map:true
 		~title:"gsel"
 		() in
 
-	let quit status : unit =
+	let active_window = Wnck.currently_active_window () in
+	let quit ?event status : unit =
+		let () = match event with
+			| None ->
+				debug "No previous window to activate"
+			| Some event ->
+				let timestamp = (GdkEvent.get_time event) in
+				debug "Activating old xid: %ld @ timestamp %ld" active_window timestamp;
+				Wnck.activate_xid active_window timestamp;
+		in
 		window#destroy ();
 		exit status
 	in
 
-	let vbox = GPack.vbox ~spacing: 10 ~packing:window#add () in
+	(* Nobody likes you, action area *)
+	window#action_area#destroy ();
+
+	(* adopt the vbox as out main content area *)
+	(* let vbox = GPack.vbox ~spacing: 10 ~packing:window#add () in *)
+	let vbox = window#vbox in
+	vbox#set_spacing 10;
 
 	(* using two extra boxes seems a rather hacky way of getting some padding... *)
 	let input_box = GBin.event_box ~packing:vbox#pack ~border_width:0 () in
@@ -245,7 +264,7 @@ let main (): unit =
 
 	ignore (input#connect#notify_text update_query);
 
-	let selection_made () =
+	let selection_made ?event () =
 		let selected = try Some (List.nth !shown_items !selected_index) with Failure _ -> None in
 		begin match selected with
 			| Some {result_source=entry;_} ->
@@ -254,7 +273,7 @@ let main (): unit =
 						else entry.text
 					in
 					print_endline text;
-					quit 0
+					quit ?event 0
 			| None -> ()
 		end
 	in
@@ -264,19 +283,19 @@ let main (): unit =
 	let (ctrl_j, _) = GtkData.AccelGroup.parse "<Ctrl>j" in
 	let (ctrl_k, _) = GtkData.AccelGroup.parse "<Ctrl>k" in
 
-	ignore (window#event#connect#key_press (fun evt ->
-		let key = GdkEvent.Key.keyval evt in
+	ignore (window#event#connect#key_press (fun event ->
+		let key = GdkEvent.Key.keyval event in
 		debug "Key: %d" key;
 		let module K = GdkKeysyms in
 		match key with
-			|k when k=K._Escape -> quit 1; true
-			|k when k=K._Return -> selection_made (); true
+			|k when k=K._Escape -> quit ~event 1; true
+			|k when k=K._Return -> selection_made ~event (); true
 			|k when k=K._Up -> shift_selection (-1); true
 			|k when k=K._Down -> shift_selection 1; true
 			|k when k=K._Page_Up -> set_selection 0; true
 			|k when k=K._Page_Down -> set_selection (max 0 ((List.length !shown_items) - 1)); true
 			| _ ->
-				if is_ctrl evt then match key with
+				if is_ctrl event then match key with
 					| k when k = ctrl_j -> shift_selection 1; true
 					| k when k = ctrl_k -> shift_selection (-1); true
 					| _ -> false
@@ -333,6 +352,15 @@ let main (): unit =
 
 
 	window#show ();
+	let () = match active_window with
+		| 0l -> ()
+		| xid ->
+			debug "setting transient for X window %ld" xid;
+			let parent_win = (Gdk.Window.create_foreign xid) in
+			(* NOTE: this segfaults if we try to do it before window#show *)
+			let gdk_win = GtkBase.Widget.window (window#as_window) in
+			Gdk.Window.set_transient_for gdk_win parent_win
+	in
 
 	let input_complete = ref false in
 	let (_:Thread.t) = Thread.create (fun () ->
@@ -344,7 +372,8 @@ let main (): unit =
 		let modify_all_items fn = with_mutex (fun () ->
 			all_items := fn !all_items
 		) in
-		input_loop ~modify_all_items ();
+		let quit = GtkThread.sync (quit ?event:None) in
+		input_loop ~modify_all_items ~quit ();
 		input_complete := true;
 		GtkThread.sync redraw ();
 	) () in
@@ -356,5 +385,4 @@ let main (): unit =
 			else false
 	) in
 
-	GMain.main ();
-	debug "exiting"
+	GMain.main ()

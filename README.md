@@ -58,8 +58,6 @@ First get `opam`. Then do:
 
 # Known issues:
 
-The gui has a lot of rough edges.
-
 There's no integration with editors.
 
 It operates on bytes, not unicode characters.
