@@ -356,7 +356,7 @@ let main (): unit =
 		| 0l -> ()
 		| xid ->
 			debug "setting transient for X window %ld" xid;
-			let parent_win = (Gdk.Window.create_foreign xid) in
+			let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in
 			(* NOTE: this segfaults if we try to do it before window#show *)
 			let gdk_win = GtkBase.Widget.window (window#as_window) in
 			Gdk.Window.set_transient_for gdk_win parent_win
