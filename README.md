@@ -56,6 +56,45 @@ First get `opam`. Then do:
 
     $ ./tools/gup bin/gsel
 
+# Vim integration:
+
+The `vim/` directory provides autoload functions which provide building blocks for calling
+gsel and doing useful things with the results. The idea is that you can plug these functions
+together as you like, but if you prefer to use my default key bindings you can just
+`call gsel#DefaultMappings()`.
+
+### Configuration:
+
+The default way to get a recursive file list is `find . -type f`. That's pretty
+slow, and includes a bunch of stuff (e.g `.git` folder contents) that you probably
+don't want. So you may want to use a better alternative of your choice, like one of:
+
+  let g:gsel_file_list_command = "git ls-files ."
+  let g:gsel_file_list_command = "ack -l ."
+  let g:gsel_file_list_command = "ag -l ."
+
+If gesl isn't on your $PATH or something silly like that, you can specify:
+
+    let g:gsel_command = "/path/to/gsel"
+
+If you want to create your own bindings, go nuts! The default ones look like this:
+
+    " In command mode, hit <c-f> to complete the current arg
+    cnoremap <C-f> <C-r>=gsel#CompleteCommand()<cr>
+    
+    " jump to a file from the current cwd
+    nnoremap <silent> <C-f> :call gsel#FindDo(".", ":drop")<cr>
+    
+    " jump to a file from the directory of the active file
+    nnoremap <silent> <leader>F :call gsel#FindDo(expand("%:p:h"), ":drop")<cr>
+    
+    " jump to buffer
+    nnoremap <silent> <C-b> :call gsel#BufferSwitch()<cr>
+
+# Other integration:
+
+Write some, send a pull-request, and get your name here :D
+
 # Known issues:
 
 There's no integration with editors.
