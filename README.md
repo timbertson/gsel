@@ -50,7 +50,7 @@ Not appreciably. The whole process takes less than a tenth of a second.
 
 First get `opam`. Then do:
 
-    $ opam install lwt lablgtk
+    $ opam install lablgtk
 
 ### Building:
 
