@@ -51,6 +51,8 @@ let input_loop ~modify_all_items ~quit () =
 	);
 	let i = ref 0 in
 	let nonempty_line = ref false in
+
+	let max_items = try int_of_string (Unix.getenv "GSEL_MAX_ITEMS") with Not_found -> 10000 in
 	let rec loop () =
 		let line = try Some (input_line stdin) with End_of_file -> None in
 		match line with
@@ -66,7 +68,17 @@ let input_loop ~modify_all_items ~quit () =
 					}
 				);
 				i := !i+1;
-				loop ()
+
+				(* give UI a chance to keep up *)
+				if ((!i mod 500) = 0) then (
+					Thread.delay 0.1
+				);
+
+				if (!i = max_items) then (
+					debug "capping items at %d" max_items
+				) else (
+					loop ()
+				)
 			| None -> (debug "stdin complete"; ())
 	in
 	loop ();
@@ -124,6 +136,9 @@ let main (): unit =
 		~focus_on_map:true
 		~title:"gsel"
 		() in
+
+	(* XXX set always-on-top *)
+	window#set_skip_taskbar_hint true;
 
 	let active_window = Wnck.currently_active_window () in
 	let quit ?event status : unit =
@@ -303,9 +318,6 @@ let main (): unit =
 	));
 	ignore (tree_view#connect#row_activated (fun _ _ -> selection_made ()));
 	ignore (window#event#connect#delete (fun _ -> quit 1; true));
-	(* XXX set always-on-top *)
-	window#set_skip_taskbar_hint true;
-	(* window#set_skip_pager_hint true; *)
 
 	(* stylings! *)
 	(* let all_states col = [ *)
