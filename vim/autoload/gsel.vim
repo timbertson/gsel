@@ -123,12 +123,11 @@ endfun
 " buffer list code copied from:
 " https://github.com/kien/ctrlp.vim/blob/master/autoload/ctrlp/buffertag.vim
 fun! gsel#BufferList()
-	let ids = filter(range(1, bufnr('$')), 'empty(getbufvar(v:val, "&buftype")) && getbufvar(v:val, "&buflisted")')
+	let ids = filter(range(1, bufnr('$')), 'empty(getbufvar(v:val, "&buftype")) && getbufvar(v:val, "&buflisted") && !empty(bufname(v:val))')
 	let names = []
 	for id in ids
 		let bname = bufname(id)
-		let ebname = bname == ''
-		let fname = fnamemodify(ebname ? '['.id.'*No Name]' : bname, ':.')
+		let fname = fnamemodify(bname, ':.')
 		cal add(names, fname)
 	endfor
 	return [ids, names]
@@ -167,18 +166,29 @@ fun! gsel#BufferSwitch()
 	call foreground()
 endfun
 
+fun! gsel#BufferFilename()
+	let l:bufinfo = gsel#BufferList()
+	let l:bufnames = join(l:bufinfo[1], "\n")
+	let l:selected = s:system(g:gsel_command, bufnames)
+	call gsel#DiscardPendingInput()
+	if l:selected != ""
+		return fnameescape(l:selected)
+	endif
+	call foreground()
+endfun
+
 fun! gsel#DefaultMappings()
-	" find & insert a file on the command line
+	" <c-f>: complete the current arg via find
+	" <c-b>: insert the filename of an open buffer
 	" TODO: use current token to restrict search?
 	cnoremap <C-f> <C-r>=gsel#CompleteCommand()<cr>
+	cnoremap <C-b> <C-r>=gsel#BufferFilename()<cr>
 
-	" jump to a file from the current cwd
+	" <c-f>: jump to a file from the current cwd
+	" <leader>f: jump to a file from the directory of the active file
+	" <c-b>: jump to buffer
 	nnoremap <silent> <C-f> :call gsel#FindDo(".", ":drop")<cr>
-
-	" jump to a file from the current file's dirname
 	nnoremap <silent> <leader>F :call gsel#FindDo(expand("%:p:h"), ":drop")<cr>
-
-	" jump to buffer
 	nnoremap <silent> <C-b> :call gsel#BufferSwitch()<cr>
 endfun
 

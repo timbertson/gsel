@@ -79,16 +79,18 @@ If gesl isn't on your $PATH or something silly like that, you can specify:
 
 If you want to create your own bindings, go nuts! The default ones look like this:
 
-    " In command mode, hit <c-f> to complete the current arg
+    " Command mode:
+    " <c-f>: complete the current arg via find
+    " <c-b>: insert the filename of an open buffer
     cnoremap <C-f> <C-r>=gsel#CompleteCommand()<cr>
+    cnoremap <C-b> <C-r>=gsel#BufferFilename()<cr>
     
-    " jump to a file from the current cwd
+    " Normal mode --
+    " <c-f>: jump to a file from the current cwd
+    " <leader>f: jump to a file from the directory of the active file
+    " <c-b>: jump to buffer
     nnoremap <silent> <C-f> :call gsel#FindDo(".", ":drop")<cr>
-    
-    " jump to a file from the directory of the active file
     nnoremap <silent> <leader>F :call gsel#FindDo(expand("%:p:h"), ":drop")<cr>
-    
-    " jump to buffer
     nnoremap <silent> <C-b> :call gsel#BufferSwitch()<cr>
 
 # Other integration:
