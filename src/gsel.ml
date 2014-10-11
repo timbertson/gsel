@@ -30,6 +30,16 @@ let rec list_take n lst = if n = 0 then [] else match lst with
 	| x::xs -> x :: list_take (n-1) xs
 	| [] -> []
 
+let findi lst pred =
+	let rec loop i l =
+		match l with
+		| head::tail ->
+				if (pred head) then (Some i)
+				else loop (i+1) tail
+		| [] -> None
+	in
+	loop 0 lst
+
 let markup_escape = Glib.Markup.escape_text
 
 let markup str indexes =
@@ -190,7 +200,7 @@ let main (): unit =
 	let all_items = ref (SortedSet.create ()) in
 	let shown_items = ref [] in
 	let last_query = ref "" in
-	let selected_index = ref 0 in
+	let current_selection = ref (0, None) in
 
 	let with_mutex : (unit -> unit) -> unit =
 		let m = Mutex.create () in
@@ -202,28 +212,37 @@ let main (): unit =
 	in
 
 
+	let update_current_selection i =
+		debug "selected index is now %d" i;
+		current_selection := (i, Some (List.nth !shown_items i))
+	in
+
 	ignore (tree_selection#connect#changed ~callback:(fun () ->
 		List.iter (fun path ->
 			match GTree.Path.get_indices path with
-				| [|i|] ->
-					debug "selected index is now %d" i;
-					selected_index := i
+				| [|i|] -> update_current_selection i
 				| _ -> assert false
 		) tree_selection#get_selected_rows
 	));
 
-	let clear_selection () =
-		selected_index := 0;
-		tree_selection#unselect_all ()
-	in
-
 	let set_selection idx =
-		selected_index := idx;
+		debug "Setting selection to %d" idx;
+		update_current_selection idx;
 		tree_selection#select_path (GTree.Path.create [idx])
 	in
 
+	let clear_selection () =
+		if !shown_items = [] then (
+			current_selection := (0, None);
+			tree_selection#unselect_all ()
+		) else (
+			set_selection 0
+		)
+	in
+
 	let shift_selection direction =
-		let new_idx = !selected_index + direction in
+		let selected_index = Tuple.fst !current_selection in
+		let new_idx = selected_index + direction in
 		if new_idx < 0 || new_idx >= (List.length !shown_items) then
 			debug "ignoring shift_selection"
 		else
@@ -264,12 +283,17 @@ let main (): unit =
 					if i > 0 then loop i tail else ()
 		in
 		loop max_display !shown_items;
-		if !shown_items = [] then (
-			clear_selection ()
-		) else
-			(* XXX do something smart to track the content of the selected item,
-			 * rather than just maintaining the selected index *)
-			set_selection !selected_index
+		let updated_idx = match !current_selection with
+			| (_, None) -> None
+			| (0, _) -> None
+			| (i, Some selected) ->
+				(* maintain selection if possible (but only when selected_idx>0) *)
+				let id = selected.result_source.input_index in
+				findi !shown_items (fun entry -> entry.result_source.input_index = id)
+		in
+		match updated_idx with
+			| Some i -> set_selection i
+			| None -> clear_selection ()
 	in
 
 	let update_query = fun text ->
@@ -280,8 +304,7 @@ let main (): unit =
 	ignore (input#connect#notify_text update_query);
 
 	let selection_made ?event () =
-		let selected = try Some (List.nth !shown_items !selected_index) with Failure _ -> None in
-		begin match selected with
+		begin match Tuple.snd !current_selection with
 			| Some {result_source=entry;_} ->
 					let text = if !print_index
 						then string_of_int entry.input_index
