@@ -26,6 +26,8 @@ let rgb a b c = `RGB (a lsl 8, b lsl 8, c lsl 8)
 let grey l = let l = l lsl 8 in `RGB (l,l,l)
 let font_scale = 1204
 
+type redraw_reason = New_input | New_query
+
 let rec list_take n lst = if n = 0 then [] else match lst with
 	| x::xs -> x :: list_take (n-1) xs
 	| [] -> []
@@ -200,7 +202,8 @@ let main (): unit =
 	let all_items = ref (SortedSet.create ()) in
 	let shown_items = ref [] in
 	let last_query = ref "" in
-	let current_selection = ref (0, None) in
+	let selected_index = ref 0 in
+	let get_selected_item () = List.nth !shown_items !selected_index in
 
 	let with_mutex : (unit -> unit) -> unit =
 		let m = Mutex.create () in
@@ -214,7 +217,7 @@ let main (): unit =
 
 	let update_current_selection i =
 		debug "selected index is now %d" i;
-		current_selection := (i, Some (List.nth !shown_items i))
+		selected_index := i
 	in
 
 	ignore (tree_selection#connect#changed ~callback:(fun () ->
@@ -233,7 +236,7 @@ let main (): unit =
 
 	let clear_selection () =
 		if !shown_items = [] then (
-			current_selection := (0, None);
+			selected_index := 0;
 			tree_selection#unselect_all ()
 		) else (
 			set_selection 0
@@ -241,15 +244,14 @@ let main (): unit =
 	in
 
 	let shift_selection direction =
-		let selected_index = Tuple.fst !current_selection in
-		let new_idx = selected_index + direction in
+		let new_idx = !selected_index + direction in
 		if new_idx < 0 || new_idx >= (List.length !shown_items) then
 			debug "ignoring shift_selection"
 		else
 			set_selection new_idx
 	in
 
-	let redraw () =
+	let redraw reason =
 		list_store#clear ();
 		let max_recall = 2000 in
 		let max_display = 20 in
@@ -283,12 +285,12 @@ let main (): unit =
 					if i > 0 then loop i tail else ()
 		in
 		loop max_display !shown_items;
-		let updated_idx = match !current_selection with
-			| (_, None) -> None
-			| (0, _) -> None
-			| (i, Some selected) ->
-				(* maintain selection if possible (but only when selected_idx>0) *)
-				let id = selected.result_source.input_index in
+		let updated_idx = match reason, !selected_index with
+			| New_query, _ -> None
+			| _, 0 -> None
+			| New_input, i ->
+				(* maintain selection if possible (but only when selected_index>0) *)
+				let id = (get_selected_item ()).result_source.input_index in
 				findi !shown_items (fun entry -> entry.result_source.input_index = id)
 		in
 		match updated_idx with
@@ -298,21 +300,20 @@ let main (): unit =
 
 	let update_query = fun text ->
 		last_query := String.lowercase text;
-		redraw ()
+		redraw New_query
 	in
 
 	ignore (input#connect#notify_text update_query);
 
 	let selection_made ?event () =
-		begin match Tuple.snd !current_selection with
-			| Some {result_source=entry;_} ->
-					let text = if !print_index
-						then string_of_int entry.input_index
-						else entry.text
-					in
-					print_endline text;
-					quit ?event 0
-			| None -> ()
+		if !shown_items = [] then () else begin
+			let {result_source=entry;_} = get_selected_item () in
+			let text = if !print_index
+				then string_of_int entry.input_index
+				else entry.text
+			in
+			print_endline text;
+			quit ?event 0
 		end
 	in
 
@@ -410,13 +411,13 @@ let main (): unit =
 		let quit = GtkThread.sync (quit ?event:None) in
 		input_loop ~modify_all_items ~quit ();
 		input_complete := true;
-		GtkThread.sync redraw ();
+		GtkThread.sync redraw New_input;
 	) () in
 
 	(* install periodic redraw handler, which loops until input_loop is done *)
 	let (_:GMain.Timeout.id) = GMain.Timeout.add ~ms:500 ~callback:(fun () ->
 		if not !input_complete
-			then (debug "redraw (timer)"; redraw (); true)
+			then (debug "redraw (timer)"; redraw New_input; true)
 			else false
 	) in
 
