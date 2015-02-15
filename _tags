@@ -1,4 +1,3 @@
-# note: want lwt > 2.4.4
-true: package(lablgtk2), debug, thread, use_wnck
+<src/*>: package(lablgtk2), debug, thread, use_wnck
 <test.*>: package(oUnit)
 "src": include

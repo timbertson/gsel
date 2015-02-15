@@ -13,7 +13,7 @@ let () =
 			Cmd( S [ A "pkg-config"; A ("--" ^ flags); A package; Sh ">"; A tmp]);
 			List.map (fun arg -> A arg) (string_list_of_file tmp)
 		in
-		if has_package then with_temp_file "pkgconfig" "pkg-config" cmd else []
+		if has_package then with_temp_file "pkgconfig" "pkg-config" cmd else (Printf.printf "Note: %s not found...\n" package; [])
 	in
 
 	dispatch ( function
