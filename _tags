@@ -1,3 +1,3 @@
-<src/*>: package(lablgtk2), debug, thread, use_wnck
+<src/*>: package(lablgtk2, xlib), thread
 <test.*>: package(oUnit)
 "src": include

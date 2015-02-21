@@ -28,6 +28,8 @@ let font_scale = 1204
 
 type redraw_reason = New_input | New_query
 
+let ignore_signal (s:GtkSignal.id) = ignore s
+
 let rec list_take n lst = if n = 0 then [] else match lst with
 	| x::xs -> x :: list_take (n-1) xs
 	| [] -> []
@@ -72,6 +74,7 @@ let input_loop ~modify_all_items ~quit () =
 				if not !nonempty_line && String.length line > 0 then
 					nonempty_line := true
 				;
+				debug "item[%d]: %s" !i line;
 				modify_all_items (fun all_items ->
 					SortedSet.add all_items {
 						text=line;
@@ -149,27 +152,74 @@ let main (): unit =
 		~title:"gsel"
 		() in
 
-	(* XXX set always-on-top *)
 	window#set_skip_taskbar_hint true;
+	window#set_keep_above true;
 
-	let active_window = Wnck.currently_active_window () in
+	(* let active_window = Wnck.currently_active_window () in *)
+
+	let parent_window = ref None in
+
 	let quit ?event status : unit =
-		let () = match event with
-			| None ->
-				debug "No previous window to activate"
-			| Some event ->
-				let timestamp = (GdkEvent.get_time event) in
-				debug "Activating old xid: %ld @ timestamp %ld" active_window timestamp;
-				Wnck.activate_xid active_window timestamp;
+		let () = match (event, !parent_window) with
+			| None ,_ | _, None -> exit status
+			| Some event, Some parent_window ->
+				let open Xlib in
+				let display = open_display () in
+				let screen = xDefaultScreenOfDisplay display in
+				let xid = xid_of_window parent_window in
+
+				ignore_signal (window#connect#after#destroy (fun event ->
+					(* "after remove" seems to trigger before the window is
+					 * actually, you know, destroyed. So we add an idle action which
+					 * hopefully only fires _after_ the window is actually
+					 * gone. If we activate the parent window too soon,
+					 * the window manager might override that decision when
+					 * our window dies
+					 *)
+					ignore (GMain.Idle.add (fun () ->
+						debug "Activating parent window %d" xid;
+
+						(* let xid = Int32.of_int xid in *)
+						(* let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in *)
+						(* XXX None of these work :/ *)
+						(* let () = Gdk.Window.focus parent_win (Int32.of_int 0) in *)
+						(* let () = Gdk.Window.focus parent_win (GMain.Event.get_current_time ()) in *)
+
+						(* Instead, we need to use xlib directly *)
+						let activateWindow = xInternAtom display "_NET_ACTIVE_WINDOW" false in
+						let serial = xLastKnownRequestProcessed display in
+						xSendEvent ~dpy:display ~win:(xRootWindowOfScreen screen)
+							~propagate:false ~event_mask:SubstructureNotifyMask
+							(XClientMessageEvCnt {
+								client_message_send_event = true;
+								client_message_display = display;
+								client_message_window = parent_window;
+								client_message_type = activateWindow;
+								client_message_serial = serial;
+								client_message_data = ClientMessageLongs [|
+									1; (* source = app *)
+									Int32.to_int (GMain.Event.get_current_time ());
+									0; 0; 0;
+								|];
+							});
+						(* after giving window input, make sure it's also on top *)
+						xRaiseWindow display parent_window;
+						(* wait for all the X stuff to finish *)
+						xSync display false;
+						exit status
+					)
+				);
+				()
+			));
+			()
 		in
-		window#destroy ();
-		exit status
+		window#destroy ()
 	in
 
 	(* Nobody likes you, action area *)
 	window#action_area#destroy ();
 
-	(* adopt the vbox as out main content area *)
+	(* adopt the vbox as our main content area *)
 	(* let vbox = GPack.vbox ~spacing: 10 ~packing:window#add () in *)
 	let vbox = window#vbox in
 	vbox#set_spacing 10;
@@ -220,7 +270,7 @@ let main (): unit =
 		selected_index := i
 	in
 
-	ignore (tree_selection#connect#changed ~callback:(fun () ->
+	ignore_signal (tree_selection#connect#changed ~callback:(fun () ->
 		List.iter (fun path ->
 			match GTree.Path.get_indices path with
 				| [|i|] -> update_current_selection i
@@ -303,11 +353,12 @@ let main (): unit =
 		redraw New_query
 	in
 
-	ignore (input#connect#notify_text update_query);
+	ignore_signal (input#connect#notify_text update_query);
 
 	let selection_made ?event () =
 		if !shown_items = [] then () else begin
 			let {result_source=entry;_} = get_selected_item () in
+			debug "selected item[%d]: %s" entry.input_index entry.text;
 			let text = if !print_index
 				then string_of_int entry.input_index
 				else entry.text
@@ -318,11 +369,11 @@ let main (): unit =
 	in
 
 	let is_ctrl evt = GdkEvent.Key.state evt = [`CONTROL] in
-	(* why are this different to GdkKeysyms._J/_K ? *)
+	(* why are these different to GdkKeysyms._J/_K ? *)
 	let (ctrl_j, _) = GtkData.AccelGroup.parse "<Ctrl>j" in
 	let (ctrl_k, _) = GtkData.AccelGroup.parse "<Ctrl>k" in
 
-	ignore (window#event#connect#key_press (fun event ->
+	ignore_signal (window#event#connect#key_press (fun event ->
 		let key = GdkEvent.Key.keyval event in
 		debug "Key: %d" key;
 		let module K = GdkKeysyms in
@@ -340,8 +391,8 @@ let main (): unit =
 					| _ -> false
 				else false
 	));
-	ignore (tree_view#connect#row_activated (fun _ _ -> selection_made ()));
-	ignore (window#event#connect#delete (fun _ -> quit 1; true));
+	ignore_signal (tree_view#connect#row_activated (fun _ _ -> selection_made ()));
+	ignore_signal (window#event#connect#delete (fun _ -> quit 1; true));
 
 	(* stylings! *)
 	(* let all_states col = [ *)
@@ -386,22 +437,62 @@ let main (): unit =
 	ops#modify_base [`NORMAL, input_bg];
 	ops#modify_text [`NORMAL, grey 250];
 
+	let misc_events = new GObj.misc_signals (window#as_widget) in
+	ignore_signal (misc_events#realize (fun event ->
+		let open Xlib in
+		let display = open_display () in
+		let wm_state = xInternAtom display "WM_STATE" false in
+		let rec get_toplevel win =
+			let root, parent, _children = xQueryTree display win in
+			debug "window 0x%x has parent 0x%x (root = 0x%x). WM_STATE ? %b"
+				(xid_of_window win)
+				(xid_of_window parent)
+				(xid_of_window root)
+				(hasWindowProperty display win wm_state)
+				;
+				(* If we find a window with WM_STATE property set, stop there.
+				 * Otherwise, hope that the toplevel window is the one directly
+				 * below the root *)
+			if root == parent || hasWindowProperty display win wm_state then win else get_toplevel parent
+		in
 
-	window#show ();
-	let () = match active_window with
-		| 0l -> ()
-		| xid ->
-			debug "setting transient for X window %ld" xid;
-			let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in
-			(* NOTE: this segfaults if we try to do it before window#show *)
-			let gdk_win = GtkBase.Widget.window (window#as_window) in
-			Gdk.Window.set_transient_for gdk_win parent_win
-	in
+		(* XXX should be able to get the focus window directly via _NET_ACTIVE_WINDOW,
+		 * rather than `get_toplevel` hackery *)
+		(* let root = xRootWindowOfScreen screen in *)
+		(* let (_actual_type, _fmt, _n, _bytes, pw) = xGetWindowProperty_window *)
+		(* 	display root wm_state *)
+		(* 	0 0 false AnyPropertyType in *)
+		(* parent_window := Some pw; *)
+
+		parent_window := match xGetInputFocus display with
+			| None -> None
+			| Some w ->
+				let w = get_toplevel w in
+				parent_window := Some w;
+				let xid = xid_of_window w in
+				debug "setting transient for %d" xid;
+				let xid = Int32.of_int xid in
+
+				let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in
+				(* NOTE: this segfaults if we try to do it before window is realized *)
+				let gdk_win = GtkBase.Widget.window (window#as_window) in
+				Gdk.Window.set_transient_for gdk_win parent_win;
+				Some w
+	));
+
+	(* ignore_signal (window#event#connect#expose (fun event -> *)
+	(* TODO: grab keyboard? *)
+	(* 	true *)
+	(* )); *)
+
+	window#show();
 
 	let input_complete = ref false in
 	let (_:Thread.t) = Thread.create (fun () ->
 		(* block these signals so that they are delivered to the main thread *)
 		let (_:int list) = Thread.sigmask Unix.SIG_BLOCK [Sys.sigint] in
+		(* prioritize GUI setup over input processing *)
+		let (_, _, _) = Unix.select [] [] [] 0.2 in
 
 		(* input_loop can only mutate state via the stuff we pass it, so
 		 * make sure everything here is thread-safe *)

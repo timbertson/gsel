@@ -9,7 +9,6 @@ in stdenv.mkDerivation {
 		oc.findlib
 		oc.ounit
 		pkgconfig
-		gnome.libwnck
 		gnome.glib
 		gnome.gtk
 		(callPackage ./nix/gup.nix {})
