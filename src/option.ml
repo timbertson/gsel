@@ -5,3 +5,7 @@ let may o f = match o with
 let map o f = match o with
 	| Some o -> Some (f o)
 	| None -> None
+
+let default o d = match o with
+	| Some o -> o
+	| None -> d

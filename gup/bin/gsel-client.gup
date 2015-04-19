@@ -1,0 +1,3 @@
+#!bash -eu
+gup -u ../main_client.native
+cp ../main_client.native "$1"
