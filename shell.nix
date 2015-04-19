@@ -5,12 +5,11 @@ in stdenv.mkDerivation {
 	name = "gsel";
 	buildInputs = [
 		oc.ocaml
-		oc.lablgtk
 		oc.findlib
-		oc.ounit
 		pkgconfig
 		gnome.glib
 		gnome.gtk
+		oc.ocaml_sexplib
 		(callPackage ./nix/gup.nix {})
 	];
 }
