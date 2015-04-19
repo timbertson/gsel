@@ -30,6 +30,58 @@ type redraw_reason = New_input | New_query
 
 let ignore_signal (s:GtkSignal.id) = ignore s
 
+type response =
+	| Success of string
+	| Error of string
+	| Cancelled
+
+class stdin_input =
+	let () = if Unix.isatty Unix.stdin then (
+		(* XXX set gui message? *)
+		prerr_endline "WARN: stdin is a terminal"
+	) in object
+	method read_line = input_line stdin
+	method respond response = match response with
+		| Success response -> print_endline response
+		| Error str -> prerr_endline str
+		| Cancelled -> ()
+end
+
+class stream_input fd =
+	let r = Unix.in_channel_of_descr fd
+	and w = Unix.out_channel_of_descr fd
+	and eof = '\000'
+	in
+	object
+	(* inherit input *)
+	method read_line =
+		let line = input_line r in
+		if String.contains line eof then begin
+			raise End_of_file
+		end;
+		line
+
+	method respond response =
+		let mode, response = match response with
+			| Success response -> ('y', response)
+			| Error response -> ('n', response)
+			| Cancelled -> ('n', "")
+		in
+		output_char w mode;
+		output_string w response;
+		output_char w '\n';
+		flush w;
+		Unix.(shutdown fd SHUTDOWN_ALL);
+		Unix.close fd
+end
+
+class server fd = object
+	method accept =
+		let stream, _addr = Unix.accept fd in
+		new stream_input stream
+end
+
+
 let rec list_take n lst = if n = 0 then [] else match lst with
 	| x::xs -> x :: list_take (n-1) xs
 	| [] -> []
@@ -58,17 +110,13 @@ let markup str indexes =
 	String.concat "" parts
 ;;
 
-let input_loop ~modify_all_items ~quit () =
-	if Unix.isatty Unix.stdin then (
-		(* XXX set gui message? *)
-		prerr_endline "WARN: stdin is a terminal"
-	);
+let input_loop ~source ~modify_all_items ~finish () =
 	let i = ref 0 in
 	let nonempty_line = ref false in
 
 	let max_items = try int_of_string (Unix.getenv "GSEL_MAX_ITEMS") with Not_found -> 10000 in
 	let rec loop () =
-		let line = try Some (input_line stdin) with End_of_file -> None in
+		let line = try Some (source#read_line) with End_of_file -> None in
 		match line with
 			| Some line ->
 				if not !nonempty_line && String.length line > 0 then
@@ -94,48 +142,84 @@ let input_loop ~modify_all_items ~quit () =
 				) else (
 					loop ()
 				)
-			| None -> (debug "stdin complete"; ())
+			| None -> (debug "input complete"; ())
 	in
 	loop ();
 	if not !nonempty_line then (
-		prerr_endline "No input received";
-		quit 1
+		finish (Error "No input received");
 	)
 ;;
 
+type xlib = {
+	display: Xlib.display;
+	activate: Xlib.window -> unit;
+	get_toplevel: Xlib.window -> Xlib.window;
+}
 
-let main (): unit =
-	let () = enable_debug := try Unix.getenv "GSEL_DEBUG" = "1" with Not_found -> false in
+let init_xlib () =
+	let open Xlib in
+	let display = open_display () in
+	let wm_state = xInternAtom display "WM_STATE" false in
 
-	let print_index = ref false in
+	let activate win =
+		let xid = xid_of_window win in
+		debug "Activating window %d" xid;
 
-	(* parse args *)
-	let rec process_args args = match args with
-		| [] -> ()
-		| "-h" :: args
-		| "--help" :: args ->
-				prerr_string (
-					"Usage: gsel [OPTIONS]\n"^
-					"\n"^
-					"Options:\n"^
-					"  --index:   Print out the index (input line number)\n"^
-					"             of the selected option, rather than its contents\n"^
-					""
-				);
-				exit 0
-		| "--index" :: args ->
-				print_index := true;
-				process_args args
-		| unknown :: _ -> failwith ("Unknown argument: " ^ unknown)
+		(* let xid = Int32.of_int xid in *)
+		(* let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in *)
+		(* XXX None of these work :/ *)
+		(* let () = Gdk.Window.focus parent_win (Int32.of_int 0) in *)
+		(* let () = Gdk.Window.focus parent_win (GMain.Event.get_current_time ()) in *)
+
+		(* Instead, we need to use xlib directly *)
+		let activateWindow = xInternAtom display "_NET_ACTIVE_WINDOW" false in
+		let serial = xLastKnownRequestProcessed display in
+		let screen = xDefaultScreenOfDisplay display in
+		xSendEvent ~dpy:display ~win:(xRootWindowOfScreen screen)
+			~propagate:false ~event_mask:SubstructureNotifyMask
+			(XClientMessageEvCnt {
+				client_message_send_event = true;
+				client_message_display = display;
+				client_message_window = win;
+				client_message_type = activateWindow;
+				client_message_serial = serial;
+				client_message_data = ClientMessageLongs [|
+					1; (* source = app *)
+					Int32.to_int (GMain.Event.get_current_time ());
+					0; 0; 0;
+				|];
+			});
+		(* after giving window input, make sure it's also on top *)
+		xRaiseWindow display win;
+		(* wait for all the X stuff to finish *)
+		xSync display false;
 	in
-	process_args (List.tl (Array.to_list Sys.argv));
 
+	let rec get_toplevel win =
+		(* XXX should be able to get the focus window directly via _NET_ACTIVE_WINDOW,
+		* rather than `get_toplevel` hackery *)
+		(* let root = xRootWindowOfScreen screen in *)
+		(* let (_actual_type, _fmt, _n, _bytes, pw) = xGetWindowProperty_window *)
+		(* 	display root wm_state *)
+		(* 	0 0 false AnyPropertyType in *)
+		(* parent_window := Some pw; *)
 
-	ignore (GMain.init ());
+		let root, parent, _children = xQueryTree display win in
+		debug "window 0x%x has parent 0x%x (root = 0x%x). WM_STATE ? %b"
+			(xid_of_window win)
+			(xid_of_window parent)
+			(xid_of_window root)
+			(hasWindowProperty display win wm_state)
+			;
+			(* If we find a window with WM_STATE property set, stop there.
+			* Otherwise, hope that the toplevel window is the one directly
+			* below the root *)
+		if root == parent || hasWindowProperty display win wm_state then win else get_toplevel parent
+	in
+	{ activate = activate; get_toplevel = get_toplevel; display = display }
+;;
 
-	let colormap = Gdk.Color.get_system_colormap () in
-	let text_color = Gdk.Color.alloc ~colormap (grey 210) in
-
+let gui_inner ~source ~colormap ~text_color ~print_index ~xlib ~exit () =
 	let window = GWindow.dialog
 		~border_width: 10
 		~screen:(Gdk.Screen.default ())
@@ -143,11 +227,12 @@ let main (): unit =
 		~height: 500 (* XXX set window height based on size of entries *)
 		~decorated: false
 		~show:false
-		~modal:false
+		~modal:true
 		~destroy_with_parent:true
 		~position: `CENTER_ON_PARENT
 		~allow_grow:true
 		~allow_shrink:true
+		(* XXX doesn't seem to do what I'd expect it to ... *)
 		~focus_on_map:true
 		~title:"gsel"
 		() in
@@ -159,54 +244,25 @@ let main (): unit =
 
 	let parent_window = ref None in
 
-	let quit ?event status : unit =
-		let () = match (event, !parent_window) with
-			| None ,_ | _, None -> exit status
-			| Some event, Some parent_window ->
-				let open Xlib in
-				let display = open_display () in
-				let screen = xDefaultScreenOfDisplay display in
-				let xid = xid_of_window parent_window in
+	let finish ?event response : unit =
+		source#respond response;
 
+		let () = match (event, !parent_window) with
+			| None ,_ | _, None -> exit response
+			| Some event, Some parent_window ->
 				ignore_signal (window#connect#after#destroy (fun event ->
 					(* "after remove" seems to trigger before the window is
-					 * actually, you know, destroyed. So we add an idle action which
-					 * hopefully only fires _after_ the window is actually
-					 * gone. If we activate the parent window too soon,
-					 * the window manager might override that decision when
-					 * our window dies
-					 *)
+					* actually, you know, destroyed. So we add an idle action which
+					* hopefully only fires _after_ the window is actually
+					* gone. If we activate the parent window too soon,
+					* the window manager might override that decision when
+					* our window dies
+					*)
+
 					ignore (GMain.Idle.add (fun () ->
-						debug "Activating parent window %d" xid;
-
-						(* let xid = Int32.of_int xid in *)
-						(* let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in *)
-						(* XXX None of these work :/ *)
-						(* let () = Gdk.Window.focus parent_win (Int32.of_int 0) in *)
-						(* let () = Gdk.Window.focus parent_win (GMain.Event.get_current_time ()) in *)
-
-						(* Instead, we need to use xlib directly *)
-						let activateWindow = xInternAtom display "_NET_ACTIVE_WINDOW" false in
-						let serial = xLastKnownRequestProcessed display in
-						xSendEvent ~dpy:display ~win:(xRootWindowOfScreen screen)
-							~propagate:false ~event_mask:SubstructureNotifyMask
-							(XClientMessageEvCnt {
-								client_message_send_event = true;
-								client_message_display = display;
-								client_message_window = parent_window;
-								client_message_type = activateWindow;
-								client_message_serial = serial;
-								client_message_data = ClientMessageLongs [|
-									1; (* source = app *)
-									Int32.to_int (GMain.Event.get_current_time ());
-									0; 0; 0;
-								|];
-							});
-						(* after giving window input, make sure it's also on top *)
-						xRaiseWindow display parent_window;
-						(* wait for all the X stuff to finish *)
-						xSync display false;
-						exit status
+						xlib.activate parent_window;
+						exit response;
+						false
 					)
 				);
 				()
@@ -363,8 +419,7 @@ let main (): unit =
 				then string_of_int entry.input_index
 				else entry.text
 			in
-			print_endline text;
-			quit ?event 0
+			finish ?event (Success text)
 		end
 	in
 
@@ -378,7 +433,7 @@ let main (): unit =
 		debug "Key: %d" key;
 		let module K = GdkKeysyms in
 		match key with
-			|k when k=K._Escape -> quit ~event 1; true
+			|k when k=K._Escape -> finish ~event Cancelled; true
 			|k when k=K._Return -> selection_made ~event (); true
 			|k when k=K._Up -> shift_selection (-1); true
 			|k when k=K._Down -> shift_selection 1; true
@@ -392,7 +447,7 @@ let main (): unit =
 				else false
 	));
 	ignore_signal (tree_view#connect#row_activated (fun _ _ -> selection_made ()));
-	ignore_signal (window#event#connect#delete (fun _ -> quit 1; true));
+	ignore_signal (window#event#connect#delete (fun _ -> finish Cancelled; true));
 
 	(* stylings! *)
 	(* let all_states col = [ *)
@@ -437,47 +492,36 @@ let main (): unit =
 	ops#modify_base [`NORMAL, input_bg];
 	ops#modify_text [`NORMAL, grey 250];
 
+	(* https://blogs.gnome.org/jnelson/2010/10/13/those-realize-map-widget-signals/ *)
+	(* window *realize* occurs when the window resource is created *)
 	let misc_events = new GObj.misc_signals (window#as_widget) in
 	ignore_signal (misc_events#realize (fun event ->
 		let open Xlib in
-		let display = open_display () in
-		let wm_state = xInternAtom display "WM_STATE" false in
-		let rec get_toplevel win =
-			let root, parent, _children = xQueryTree display win in
-			debug "window 0x%x has parent 0x%x (root = 0x%x). WM_STATE ? %b"
-				(xid_of_window win)
-				(xid_of_window parent)
-				(xid_of_window root)
-				(hasWindowProperty display win wm_state)
-				;
-				(* If we find a window with WM_STATE property set, stop there.
-				 * Otherwise, hope that the toplevel window is the one directly
-				 * below the root *)
-			if root == parent || hasWindowProperty display win wm_state then win else get_toplevel parent
-		in
+		parent_window := Option.map (xGetInputFocus xlib.display) (fun w ->
+			let w = xlib.get_toplevel w in
+			parent_window := Some w;
+			let xid = xid_of_window w in
+			debug "setting transient for %d" xid;
+			let xid = Int32.of_int xid in
 
-		(* XXX should be able to get the focus window directly via _NET_ACTIVE_WINDOW,
-		 * rather than `get_toplevel` hackery *)
-		(* let root = xRootWindowOfScreen screen in *)
-		(* let (_actual_type, _fmt, _n, _bytes, pw) = xGetWindowProperty_window *)
-		(* 	display root wm_state *)
-		(* 	0 0 false AnyPropertyType in *)
-		(* parent_window := Some pw; *)
+			let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in
+			(* NOTE: this segfaults if we try to do it before window is realized *)
+			let gdk_win = GtkBase.Widget.window (window#as_window) in
+			Gdk.Window.set_transient_for gdk_win parent_win;
+			w
+		);
+	));
 
-		parent_window := match xGetInputFocus display with
-			| None -> None
-			| Some w ->
-				let w = get_toplevel w in
-				parent_window := Some w;
-				let xid = xid_of_window w in
-				debug "setting transient for %d" xid;
-				let xid = Int32.of_int xid in
-
-				let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in
-				(* NOTE: this segfaults if we try to do it before window is realized *)
-				let gdk_win = GtkBase.Widget.window (window#as_window) in
-				Gdk.Window.set_transient_for gdk_win parent_win;
-				Some w
+	(* window *map* occurs when the window is shown. window.focus_on_map
+	 * doesn't do what you'd think it would, so we manually activate
+	 * our parent window here (using xlib).
+	 * Why not activate our _own_ window? We already have a reference to
+	 * the parent xwindow, and it's not clear how to get an xwindow
+	 * from a gtk one. Since we're modal, it has the same effect.
+	 *)
+	ignore_signal (window#event#connect#map (fun event ->
+		Option.may !parent_window (xlib.activate);
+		false
 	));
 
 	(* ignore_signal (window#event#connect#expose (fun event -> *)
@@ -485,7 +529,7 @@ let main (): unit =
 	(* 	true *)
 	(* )); *)
 
-	window#show();
+	window#present();
 
 	let input_complete = ref false in
 	let (_:Thread.t) = Thread.create (fun () ->
@@ -495,12 +539,12 @@ let main (): unit =
 		let (_, _, _) = Unix.select [] [] [] 0.2 in
 
 		(* input_loop can only mutate state via the stuff we pass it, so
-		 * make sure everything here is thread-safe *)
+		* make sure everything here is thread-safe *)
 		let modify_all_items fn = with_mutex (fun () ->
 			all_items := fn !all_items
 		) in
-		let quit = GtkThread.sync (quit ?event:None) in
-		input_loop ~modify_all_items ~quit ();
+		let finish = GtkThread.sync (finish ?event:None) in
+		input_loop ~source ~modify_all_items ~finish ();
 		input_complete := true;
 		GtkThread.sync redraw New_input;
 	) () in
@@ -511,5 +555,79 @@ let main (): unit =
 			then (debug "redraw (timer)"; redraw New_input; true)
 			else false
 	) in
+	()
+;;
 
-	GMain.main ()
+let gui_loop ~server ~print_index () =
+	ignore (GMain.init ());
+	let xlib = init_xlib () in
+
+	let colormap = Gdk.Color.get_system_colormap () in
+	let text_color = Gdk.Color.alloc ~colormap (grey 210) in
+
+	match server with
+		| Some server -> begin
+				let (_:Thread.t) = Thread.create (fun () ->
+					(* block these signals so that they are delivered to the main thread *)
+					let (_:int list) = Thread.sigmask Unix.SIG_BLOCK [Sys.sigint] in
+					while true do
+						let source = server#accept in
+						GtkThread.sync (gui_inner ~source ~colormap ~text_color ~print_index ~xlib ~exit:(fun _response ->
+							debug "session ended"
+						)) ()
+					done
+				) () in
+				GMain.main ()
+			end
+		| None -> begin
+				gui_inner ~source:(new stdin_input) ~colormap ~text_color ~print_index ~xlib ~exit:(fun response ->
+					Pervasives.exit (match response with Success _ -> 0 | Cancelled | Error _ -> 1)
+				) ();
+				GMain.main ()
+		end
+;;
+
+let main (): unit =
+	let () = enable_debug := try Unix.getenv "GSEL_DEBUG" = "1" with Not_found -> false in
+
+	let print_index = ref false in
+	let server_mode = ref false in
+
+	(* parse args *)
+	let rec process_args args = match args with
+		| [] -> ()
+		| "-h" :: args
+		| "--help" :: args ->
+				prerr_string (
+					"Usage: gsel [OPTIONS]\n"^
+					"\n"^
+					"Options:\n"^
+					"  --index:    Print out the index (input line number)\n"^
+					"              of the selected option, rather than its contents\n"^
+					"  --server:   Run a server\n"^
+					""
+				);
+				exit 0
+		| "--index" :: args ->
+				print_index := true;
+				process_args args
+		| "--server" :: args ->
+				server_mode := true;
+				process_args args
+		| unknown :: _ -> failwith ("Unknown argument: " ^ unknown)
+	in
+	process_args (List.tl (Array.to_list Sys.argv));
+	let server = if !server_mode then (
+		let open Unix in
+		let fd = socket PF_UNIX SOCK_STREAM 0 in
+		let path = "\000/tmp/gsel.sock" in
+		let addr = ADDR_UNIX path in
+		bind fd addr;
+		listen fd 1;
+		Some (new server fd)
+	) else (
+		None
+	) in
+	gui_loop ~server ~print_index ()
+
+
