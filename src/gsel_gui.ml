@@ -565,15 +565,14 @@ let gui_loop ~server ~opts () =
 					let (_:int list) = Thread.sigmask Unix.SIG_BLOCK [Sys.sigint] in
 					while true do
 						let source = server#accept in
-						let opts = match source#read_line with
+						match source#read_line with
+							| None -> () (* connection closed; ignore *)
 							| Some (line:string) ->
 									debug "received serialized opts: %s" line;
-									run_options_of_sexp (Sexp.of_string line)
-							| None -> opts (* shouldn't actually happen *)
-						in
-						GtkThread.sync (gui_inner ~source ~colormap ~text_color ~opts ~xlib ~exit:(fun _response ->
-							debug "session ended"
-						)) ()
+									let opts = run_options_of_sexp (Sexp.of_string line) in
+									GtkThread.sync (gui_inner ~source ~colormap ~text_color ~opts ~xlib ~exit:(fun _response ->
+										debug "session ended"
+									)) ()
 					done
 				) () in
 				GMain.main ()
