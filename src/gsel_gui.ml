@@ -147,6 +147,12 @@ type xlib = {
 	get_toplevel: Xlib.window -> Xlib.window;
 }
 
+type display_state = {
+	xlib : xlib;
+	text_color : Gdk.color;
+}
+
+
 let init_xlib () =
 	let open Xlib in
 	let display = open_display () in
@@ -210,7 +216,9 @@ let init_xlib () =
 	{ activate = activate; get_toplevel = get_toplevel; display = display }
 ;;
 
-let gui_inner ~source ~colormap ~text_color ~opts ~xlib ~exit () =
+let gui_inner ~source ~display_state ~opts ~exit () =
+	let text_color = display_state.text_color in
+	let xlib = display_state.xlib in
 	let window = GWindow.dialog
 		~border_width: 10
 		~screen:(Gdk.Screen.default ())
@@ -552,17 +560,22 @@ let gui_inner ~source ~colormap ~text_color ~opts ~xlib ~exit () =
 ;;
 
 let gui_loop ~server ~opts () =
-	ignore (GMain.init ());
-	let xlib = init_xlib () in
-
-	let colormap = Gdk.Color.get_system_colormap () in
-	let text_color = Gdk.Color.alloc ~colormap (grey 210) in
+	let init_display () =
+		ignore (GMain.init ());
+		let xlib = init_xlib () in
+		let colormap = Gdk.Color.get_system_colormap () in
+		let text_color = Gdk.Color.alloc ~colormap (grey 210) in
+		{
+			xlib = xlib;
+			text_color = text_color;
+		}
+	in
 
 	match server with
 		| Some server -> begin
 				let (_:Thread.t) = Thread.create (fun () ->
-					(* block these signals so that they are delivered to the main thread *)
-					let (_:int list) = Thread.sigmask Unix.SIG_BLOCK [Sys.sigint] in
+					init_background_thread ();
+					let display_state = ref None in
 					while true do
 						let source = server#accept in
 						match source#read_line with
@@ -570,9 +583,22 @@ let gui_loop ~server ~opts () =
 							| Some (line:string) ->
 									debug "received serialized opts: %s" line;
 									let opts = run_options_of_sexp (Sexp.of_string line) in
-									GtkThread.sync (gui_inner ~source ~colormap ~text_color ~opts ~xlib ~exit:(fun _response ->
-										debug "session ended"
-									)) ()
+									let display_state = match !display_state with
+										| Some display_state -> display_state
+										| None ->
+												(* XXX this is a bit hacky... We're just adopting $DISPLAY
+												 * from the first client that connects... *)
+												Option.may opts.display_env (Unix.putenv "DISPLAY");
+												let d = init_display () in
+												display_state := Some d;
+												d
+									in
+									GtkThread.sync (gui_inner
+										~source ~display_state ~opts
+										~exit:(fun _response ->
+											debug "session ended"
+										))
+									()
 					done
 				) () in
 				GMain.main ()
@@ -582,12 +608,21 @@ let gui_loop ~server ~opts () =
 					(* XXX set gui message? *)
 					prerr_endline "WARN: stdin is a terminal"
 				);
-				gui_inner ~source:(new stdin_input) ~colormap ~text_color ~opts ~xlib ~exit:(fun response ->
-					Pervasives.exit (match response with Success _ -> 0 | Cancelled | Error _ -> 1)
-				) ();
+
+				gui_inner
+					~source:(new stdin_input)
+					~display_state:(init_display ())
+					~opts
+					~exit:(fun response ->
+						Pervasives.exit (match response with Success _ -> 0 | Cancelled | Error _ -> 1)
+					)
+					();
 				GMain.main ()
 		end
 ;;
+
+external fd_of_int : int -> Unix.file_descr = "%identity"
+let systemd_first_fd = fd_of_int 3
 
 let main (): unit =
 	init_logging ();
@@ -598,10 +633,23 @@ let main (): unit =
 		| GSEL_CLIENT -> Option.may (Gsel_client.run opts) exit
 		| GSEL_STANDALONE -> ()
 		| GSEL_SERVER ->
-				let fd, path, addr = init_socket opts in
-				Unix.bind fd addr;
+				let fd = if (
+					try int_of_string (Unix.getenv "LISTEN_PID") == Unix.getpid ()
+					with Not_found -> false
+				) then (
+					(* socket activation *)
+					debug "Using socket activation...";
+					let fd_count = int_of_string (Unix.getenv "LISTEN_FDS") in
+					if fd_count == 1
+						then systemd_first_fd
+						else failwith (Printf.sprintf "Expected 1 $LISTEN_FDS, got %d" fd_count)
+				) else (
+					let fd, path, addr = init_socket opts in
+					Unix.bind fd addr;
+					Printf.eprintf "Server listening on %s\n" path;
+					fd
+				) in
 				Unix.listen fd 1;
-				Printf.eprintf "Server listening on %s\n" path;
 				server := Some (new server fd)
 	in
 	gui_loop ~server:!server ~opts:opts.run_options ()

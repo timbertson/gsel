@@ -38,7 +38,7 @@ let run_inner opts fd =
 	let response = input_line response_stream in
 	let status = match typ with
 		| 'y' -> print_string response; 0
-		| 'n' -> prerr_string response; 0
+		| 'n' -> prerr_string response; 1
 		| t -> failwith (Printf.sprintf "Unknown response type %c" t)
 	in
 	status

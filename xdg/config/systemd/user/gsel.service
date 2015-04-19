@@ -1,0 +1,8 @@
+[Unit]
+Description=gsel server
+
+[Service]
+ExecStart=/usr/bin/env bash -euxc 'env; exec gsel --server'
+Environment=PATH=/usr/bin:/usr/local/bin:%h/bin:%h/.bin
+Environment=OCAMLRUNPARAM=b
+Restart=on-failure

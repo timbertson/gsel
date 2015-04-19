@@ -1,0 +1,9 @@
+[Unit]
+Description=gsel server
+
+[Socket]
+ListenStream=@%t/gsel.sock
+
+[Install]
+WantedBy=default.target
+

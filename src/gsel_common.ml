@@ -4,6 +4,7 @@ open Sexplib.Std
 
 type run_options = {
 	print_index : bool;
+	display_env : string option;
 } with sexp
 
 type program_mode =
@@ -86,7 +87,10 @@ let parse_args () =
 	{
 		program_mode = mode;
 		server_address = !server_address;
-		run_options = { print_index = !print_index };
+		run_options = {
+			print_index = !print_index;
+			display_env = try Some (Unix.getenv "DISPLAY") with Not_found -> None;
+		};
 	}
 
 let init_socket opts =
