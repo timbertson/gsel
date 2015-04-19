@@ -1,9 +1,19 @@
 open Log
 open Gsel_common
+open Sexplib
 
-let run_inner fd =
-	let source = (new stdin_input) in
+let run_inner opts fd =
 	let dest = Unix.out_channel_of_descr fd in
+
+	(* send initial opts *)
+	let serialized_opts = Sexp.to_string_mach
+		(sexp_of_run_options opts) in
+	debug "serialized opts: %s" serialized_opts;
+	output_string dest serialized_opts;
+	output_char dest '\n';
+	flush dest;
+
+	let source = (new stdin_input) in
 	let rec loop () =
 		match source#read_line with
 			| Some line ->
@@ -44,7 +54,7 @@ let run opts =
 			false
 		end
 	) then (
-		Some (run_inner fd)
+		Some (run_inner opts.run_options fd)
 	) else None
 
 let main () =

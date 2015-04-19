@@ -1,8 +1,10 @@
 open Log
 
+open Sexplib.Std
+
 type run_options = {
 	print_index : bool;
-}
+} with sexp
 
 type program_mode =
 	| GSEL_SERVER

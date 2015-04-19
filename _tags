@@ -1,3 +1,5 @@
-<src/*>: package(lablgtk2, xlib), thread
+<src/*gui*>: package(lablgtk2, xlib)
+<src/gsel_common.ml>: package(sexplib.syntax), syntax(camlp4o)
 <test.*>: package(oUnit)
+true: package(unix, threads, sexplib), thread
 "src": include

@@ -2,6 +2,8 @@ open Log
 open Search
 open Gsel_common
 
+open Sexplib
+
 module SortedSet = struct
 	type t = entry list
 	let cmp a b =
@@ -563,7 +565,12 @@ let gui_loop ~server ~opts () =
 					let (_:int list) = Thread.sigmask Unix.SIG_BLOCK [Sys.sigint] in
 					while true do
 						let source = server#accept in
-						(* XXX parse options from first line *)
+						let opts = match source#read_line with
+							| Some (line:string) ->
+									debug "received serialized opts: %s" line;
+									run_options_of_sexp (Sexp.of_string line)
+							| None -> opts (* shouldn't actually happen *)
+						in
 						GtkThread.sync (gui_inner ~source ~colormap ~text_color ~opts ~xlib ~exit:(fun _response ->
 							debug "session ended"
 						)) ()
