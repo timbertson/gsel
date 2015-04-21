@@ -114,7 +114,7 @@ let init_socket opts =
 
 let init_background_thread () =
 	(* block these signals so that they are delivered to the main thread *)
-	let (_:int list) = Thread.sigmask Unix.SIG_BLOCK [Sys.sigint] in
+	let (_:int list) = Thread.sigmask Unix.SIG_BLOCK [Sys.sigint; Sys.sigpipe] in
 	()
 ;;
 

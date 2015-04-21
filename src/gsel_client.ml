@@ -3,6 +3,10 @@ open Gsel_common
 open Sexplib
 
 let run_inner opts fd =
+	(* the server agressively closes the socket when it's
+	 * done handling a request. So the client can ignore SIGPIPE *)
+	Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
+
 	let dest = Unix.out_channel_of_descr fd in
 
 	(* send initial opts *)
@@ -15,18 +19,20 @@ let run_inner opts fd =
 
 	let source = (new stdin_input) in
 	let rec loop () =
-		match source#read_line with
-			| Some line ->
-				output_string dest line;
-				output_char dest '\n';
-				loop ()
+		try begin
+			match source#read_line with
+				| Some line ->
+					output_string dest line;
+					output_char dest '\n';
+					loop ()
 
-			| None ->
-				debug "input complete";
-				output_char dest '\000';
-				output_char dest '\n';
-				flush dest;
-				()
+				| None ->
+					debug "input complete";
+					output_char dest '\000';
+					output_char dest '\n';
+					flush dest;
+					()
+		end with e -> debug "input loop failed with %s" (Printexc.to_string e);
 	in
 	let (_:Thread.t) = Thread.create (fun () ->
 		init_background_thread ();
@@ -36,9 +42,10 @@ let run_inner opts fd =
 	let response_stream = Unix.in_channel_of_descr fd in
 	let typ = input_char response_stream in
 	let response = input_line response_stream in
+	debug "got response %c|%s" typ response;
 	let status = match typ with
-		| 'y' -> print_string response; 0
-		| 'n' -> prerr_string response; 1
+		| 'y' -> print_endline response; 0
+		| 'n' -> prerr_endline response; 1
 		| t -> failwith (Printf.sprintf "Unknown response type %c" t)
 	in
 	status
