@@ -1,8 +1,9 @@
 [Unit]
 Description=gsel server
+Requires=gsel.socket
 
 [Service]
-ExecStart=/usr/bin/env bash -euxc 'env; exec gsel --server'
-Environment=PATH=/usr/bin:/usr/local/bin:%h/bin:%h/.bin
+ExecStart=/usr/bin/env bash -euxc 'env; exec 0install run -c http://gfxmonk.net/dist/0install/gsel.xml --server'
+# Environment=PATH=/usr/bin:/usr/local/bin
 Environment=OCAMLRUNPARAM=b
 Restart=on-failure
