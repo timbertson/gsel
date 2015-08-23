@@ -237,9 +237,6 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 		() in
 
 	window#set_skip_taskbar_hint true;
-	window#set_keep_above true;
-
-	(* let active_window = Wnck.currently_active_window () in *)
 
 	let parent_window = ref None in
 
