@@ -17,13 +17,14 @@
 		<command name="client" path="bin/gsel-client"></command>
 
 		<!-- XXX these bindings should be _inside_ the relevant command, but they are not due to a ZI bug(?) -->
+		<environment insert="share" mode="prepend" name="XDG_CONFIG_DIRS"/>
+
 		<command name="systemd-unit" path="bin/gsel">
 		</command>
-			<environment insert="xdg/config" mode="prepend" name="XDG_CONFIG_DIRS"/>
 
 		<command name="vim-plugin" path="bin/gsel">
 		</command>
-			<environment insert="vim" mode="prepend" name="VIMPATH"/>
+			<environment insert="share/vim" mode="prepend" name="VIMPATH"/>
 			<environment insert="bin" mode="append" name="PATH"/>
 
 		<implementation version="{version}">
