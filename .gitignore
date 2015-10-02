@@ -3,3 +3,4 @@
 *-local.xml
 /_build
 /bin
+/nix/local.tgz
