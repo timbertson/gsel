@@ -493,7 +493,8 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 	let misc_events = new GObj.misc_signals (window#as_widget) in
 	ignore_signal (misc_events#realize (fun event ->
 		let open Xlib in
-		parent_window := Option.map (xGetInputFocus xlib.display) (fun w ->
+		let (win, _focus_state) = (xGetInputFocus xlib.display) in
+		parent_window := Option.map win (fun w ->
 			let w = xlib.get_toplevel w in
 			parent_window := Some w;
 			let xid = xid_of_window w in
