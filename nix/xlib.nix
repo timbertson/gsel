@@ -5,8 +5,8 @@ stdenv.mkDerivation {
 	src = fetchgit {
 		url = "https://github.com/gfxmonk/ocaml-xlib.git";
 		# url = "/home/tim/dev/ocaml/xlib";
-		rev = "fbd61568f100a92722bd7868395b71ac8043f6f5";
-		sha256="76f7fed11f6d7d99d5e33844906bf64724493cbc624a18d493a8b6555d698273";
+		rev = "977f67f99c9776c39498f619937af485fbd3e2a2";
+		sha256="a51961636b31d366557074d386054111aaa37a0867eafac0644af1b3103c2978";
 	};
 	buildInputs = [
 		ocamlPackages.ocaml
