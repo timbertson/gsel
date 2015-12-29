@@ -1,21 +1,27 @@
 {pkgs ? import <nixpkgs> {}, ocamlPackages ? pkgs.ocamlPackages_latest}:
 with pkgs;
-stdenv.mkDerivation {
+let
+	dev_repo = builtins.getEnv "OCAML_XLIB_DEVEL";
+	toPath = s: /. + s;
+in
+if dev_repo != ""
+then callPackage (toPath "${dev_repo}/nix/local.nix") {}
+else stdenv.mkDerivation {
 	name = "ocaml-xlib";
 	src = fetchgit {
-		url = "https://github.com/gfxmonk/ocaml-xlib.git";
-		# url = "/home/tim/dev/ocaml/xlib";
-		rev = "977f67f99c9776c39498f619937af485fbd3e2a2";
-		sha256="a51961636b31d366557074d386054111aaa37a0867eafac0644af1b3103c2978";
+		url = "https://github.com/fccm/ocaml-xlib.git";
+		rev = "069311d1abbd9ee7420cc2fb29781531ccf65529";
+		sha256="e0ec165ae9f73b4b77044cf4f3f3d6a9cb1ca17e91cda5d3cfa6ce5a9bbda402";
 	};
 	buildInputs = [
 		ocamlPackages.ocaml
-		ocamlPackages.lablgtk
+		# ocamlPackages.lablgtk
 		ocamlPackages.findlib
 		pkgconfig
 		xlibs.libX11
 	];
-	# preBuild = "sed -i -e '/^directory =/d' META";
+	preBuild = "cd src";
 	createFindlibDestdir = true;
 	installPhase = "make install PREFIX=$OCAMLFIND_DESTDIR/xlib";
 }
+
