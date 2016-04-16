@@ -1,3 +1,5 @@
+<img src="http://gfxmonk.net/dist/status/project/gsel.png">
+
 # `gsel`
 
 `gsel` is a fuzzy selector, inspired by [selecta](https://github.com/garybernhardt/selecta).
