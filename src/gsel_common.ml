@@ -5,7 +5,7 @@ open Sexplib.Std
 type run_options = {
 	print_index : bool;
 	display_env : string option;
-} with sexp
+} [@@deriving sexp]
 
 type program_mode =
 	| GSEL_SERVER

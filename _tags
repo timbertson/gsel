@@ -1,5 +1,6 @@
 <src/*gui*>: package(lablgtk2, xlib)
-<src/gsel_common.ml>: package(sexplib.syntax), syntax(camlp4o)
+<src/gsel_common.ml>: package(sexplib, ppx_deriving, ppx_sexp_conv)
 <test.*>: package(oUnit)
 true: package(unix, threads, sexplib), thread
 "src": include
+"gtkparasite": -traverse

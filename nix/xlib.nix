@@ -16,7 +16,7 @@ else stdenv.mkDerivation {
 	buildInputs = [
 		ocamlPackages.ocaml
 		# ocamlPackages.lablgtk
-		ocamlPackages.findlib
+		ocamlPackages.ocamlfind
 		pkgconfig
 		xlibs.libX11
 	];
