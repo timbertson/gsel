@@ -142,7 +142,6 @@ let init_background_thread () =
 
 let with_tty (type a) : (Unix.file_descr option -> a) -> a = fun fn ->
 	let open Unix in
-				
 	let tty = if Unix.isatty Unix.stdin then (
 		(* XXX set gui message? *)
 		prerr_endline "WARN: stdin is a terminal";
@@ -158,11 +157,17 @@ let with_tty (type a) : (Unix.file_descr option -> a) -> a = fun fn ->
 	match tty with
 		| None -> fn None
 		| Some ttyfd ->
+			Sys.set_signal Sys.sigttou (Sys.Signal_handle ignore);
 			let original = tcgetattr ttyfd in
 			let mode = TCSADRAIN in
 			(* icanon = wait for newline; echo = display input *)
-			tcsetattr ttyfd mode { original with c_icanon = false; c_echo = false; };
-			let reset () = tcsetattr ttyfd mode original in
+			let reset = try
+				tcsetattr ttyfd mode { original with c_icanon = false; c_echo = false; };
+				fun () -> tcsetattr ttyfd mode original
+			with Unix.Unix_error (Unix.EINTR, _, _) -> (
+				prerr_endline "[gsel] WARN: can't access TTY";
+				fun () -> ()
+			) in
 			let rv = try fn tty with e -> (reset (); raise e) in
 			reset ();
 			rv
