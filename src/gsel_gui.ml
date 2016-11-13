@@ -75,6 +75,7 @@ let input_loop ~source ~append_query ~modify_all_items ~finish () =
 	let max_items = try int_of_string (Unix.getenv "GSEL_MAX_ITEMS") with Not_found -> 10000 in
 	source#consume (function
 		| Options _ -> Continue
+		| EOF -> Continue
 		| Query text ->
 			debug "append query text: %s" text;
 			append_query text;

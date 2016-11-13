@@ -18,12 +18,13 @@ let run_inner opts ~tty fd =
 	output_char dest rpc.nl;
 	flush dest;
 
+	let source = terminal_source ~tty opts in
 	let (_:Thread.t) =
-		let source = terminal_source ~tty opts in
 		let run () =
 			try (
 				source#consume (function
 					| Options _ -> failwith "options not supported"
+					| EOF -> flush dest; Continue
 					| Item line ->
 						debug "sending line: \"%s\"" (String.escaped line);
 						output_char dest rpc.item;
@@ -48,16 +49,12 @@ let run_inner opts ~tty fd =
 
 	let response_stream = Unix.in_channel_of_descr fd in
 	let mode = input_char response_stream in
-	let response = input_line response_stream in
-	debug "got response %c|%s" mode response;
-	let status =
-		if mode = rpc.selection
-			then (print_endline response; 0)
-		else if mode = rpc.failure
-			then (prerr_endline response; 1)
-		else failwith (Printf.sprintf "Unknown response type %c" mode)
-	in
-	status
+	let contents = input_line response_stream in
+	let response = response_of_rpc mode contents in
+	source#respond response;
+	match response with
+		| Success _ -> 0
+		| _ -> 1
 ;;
 
 let run opts =

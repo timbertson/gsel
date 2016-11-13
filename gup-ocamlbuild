@@ -1,3 +1,3 @@
 #!bash -eu
 gup --always
-ocamlbuild -use-ocamlfind "$2"
+ocamlbuild -use-ocamlfind -cflag -warn-error -cflag +a "$2"

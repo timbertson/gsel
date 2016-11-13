@@ -51,7 +51,6 @@ let rpc = {
 
 let string_of_char = String.make 1
 
-
 let parse_args () =
 	let print_index = ref false in
 	let server_mode = ref false in
@@ -185,11 +184,13 @@ type input =
 	| Item of string
 	| Query of string
 	| Options of string
+	| EOF
 
 let string_of_input = function
 	| Item s -> "Item \"" ^ s ^ "\""
 	| Query s -> "Query \"" ^ s ^ "\""
 	| Options s -> "Options \"" ^ s ^ "\""
+	| EOF -> "EOF"
 
 let input_of_line contents =
 	if String.contains contents rpc.eof
@@ -212,6 +213,11 @@ type response =
 	| Error of string
 	| Cancelled
 
+let response_of_rpc ch str =
+	if ch = rpc.selection then Success str
+	else if ch = rpc.failure then Error str
+	else failwith ("Unknown RPC response: " ^ (string_of_char ch))
+
 type emitter_feedback =
 	| Continue
 	| Stop
@@ -219,7 +225,10 @@ type emitter_feedback =
 let consume_lines read_line emitter =
 	let rec loop () = (
 		match read_line () with
-			| None -> debug "input complete"; ()
+			| None ->
+				debug "input complete";
+				let (_:emitter_feedback) = emitter EOF in
+				()
 			| Some line -> (
 				match emitter line with
 					| Stop -> ()
@@ -370,6 +379,11 @@ object
 	method read_options_header = stdin_source#read_options_header
 	method consume emitter =
 		let open Unix in
+		let emit item = match emitter item with
+			| Continue -> ()
+			| Stop -> raise Stop_emitting
+		in
+
 		let rec loop () =
 			let readable, _writable, _err = select !sources [] [] timeout in
 			debug "select returned %d readable resources out of %d" (List.length readable) (List.length !sources);
@@ -378,14 +392,11 @@ object
 					readable |> List.iter (fun source ->
 						match read_input source with
 							| None ->
+								emit EOF;
 								sources := !sources |> List.filter ((<>) source);
 								()
 							| Some items ->
-								items |> List.iter (fun item ->
-									match emitter item with
-										| Continue -> ()
-										| Stop -> raise Stop_emitting
-								)
+								items |> List.iter emit
 					);
 					loop
 				with Stop_emitting -> stop
