@@ -585,9 +585,9 @@ let gui_loop ~server ~opts () =
 		| None -> begin
 				with_tty (fun tty ->
 					gui_inner
-						~source:(terminal_source ~tty)
+						~source:(terminal_source ~tty opts)
 						~display_state:(init_display ())
-						~opts
+						~opts:opts.run_options
 						~exit:(fun response ->
 							Pervasives.exit (match response with Success _ -> 0 | Cancelled | Error _ -> 1)
 						)
@@ -628,6 +628,6 @@ let main (): unit =
 				Unix.listen fd 1;
 				server := Some (new server fd)
 	in
-	gui_loop ~server:!server ~opts:opts.run_options ()
+	gui_loop ~server:!server ~opts ()
 
 

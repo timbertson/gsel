@@ -16,6 +16,7 @@ type program_options = {
 	run_options : run_options;
 	program_mode: program_mode;
 	server_address : string option;
+	null_terminate : bool;
 }
 
 let starts_with str prefix =
@@ -56,6 +57,7 @@ let parse_args () =
 	let server_mode = ref false in
 	let client_mode = ref false in
 	let server_address = ref None in
+	let null_terminate = ref false in
 
 	(* parse args *)
 	let addr_prefix = "--addr=" in
@@ -73,6 +75,7 @@ let parse_args () =
 					"  --client:    Connect to a server (falls back to normal operation\n"^
 					"               if no server is available)\n"^
 					"  --addr=ADDR: Server address (use with --client / --server)\n"^
+					"  --null, -0   Terminate selection with null byte instead of newline\n"^
 					""
 				);
 				exit 0
@@ -97,6 +100,11 @@ let parse_args () =
 				server_address := Some addr;
 				process_args args
 
+		| "--null" :: args
+		| "-0" :: args ->
+				null_terminate := true;
+				process_args args
+
 		| unknown :: _ -> failwith ("Unknown argument: " ^ unknown)
 	in
 	process_args (List.tl (Array.to_list Sys.argv));
@@ -109,6 +117,7 @@ let parse_args () =
 	{
 		program_mode = mode;
 		server_address = !server_address;
+		null_terminate = !null_terminate;
 		run_options = {
 			print_index = !print_index;
 			display_env = try Some (Unix.getenv "DISPLAY") with Not_found -> None;
@@ -226,7 +235,7 @@ class type source = object
 	method repr : string
 end
 
-class stdin_input : source =
+class stdin_input program_options: source =
 	let read_line () =
 		(* stdin only allows item input *)
 		try Some (Item (input_line stdin))
@@ -240,7 +249,13 @@ class stdin_input : source =
 	method consume emitter = consume_lines read_line emitter
 
 	method respond response = match response with
-		| Success response -> print_endline response
+		| Success response ->
+				if program_options.null_terminate then (
+					print_string response;
+					print_char '\000'
+				) else (
+					print_endline response
+				)
 		| Error str -> prerr_endline str
 		| Cancelled -> ()
 end
@@ -275,7 +290,7 @@ end
 
 exception Stop_emitting
 
-class terminal_input ~tty ~timeout : source =
+class terminal_input ~tty ~timeout program_options : source =
 	let buflen = 500 in
 	let nlre = Str.regexp "\n" in
 
@@ -347,7 +362,7 @@ class terminal_input ~tty ~timeout : source =
 	let read_input source =
 		if source = tty then read_tty source else read_stdin source
 	in
-	let stdin_source = new stdin_input in
+	let stdin_source = new stdin_input program_options in
 	let sources = ref [tty; Unix.stdin] in
 	let stop () = () in
 object
@@ -381,9 +396,9 @@ object
 	method respond response = stdin_source#respond response
 end
 
-let terminal_source ~tty = match tty with
-	| Some tty -> new terminal_input ~tty ~timeout:120.0
-	| None -> new stdin_input
+let terminal_source ~tty program_options = match tty with
+	| Some tty -> new terminal_input ~tty ~timeout:120.0 program_options
+	| None -> new stdin_input program_options
 
 let init_logging () =
 	enable_debug := try Unix.getenv "GSEL_DEBUG" = "1" with Not_found -> false

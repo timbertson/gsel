@@ -11,7 +11,7 @@ let run_inner opts ~tty fd =
 
 	(* send initial opts *)
 	let serialized_opts = Sexp.to_string_mach
-		(sexp_of_run_options opts) in
+		(sexp_of_run_options opts.run_options) in
 	debug "serialized opts: %s" serialized_opts;
 	output_char dest rpc.options;
 	output_string dest serialized_opts;
@@ -19,7 +19,7 @@ let run_inner opts ~tty fd =
 	flush dest;
 
 	let (_:Thread.t) =
-		let source = terminal_source ~tty in
+		let source = terminal_source ~tty opts in
 		let run () =
 			try (
 				source#consume (function
@@ -71,7 +71,7 @@ let run opts =
 		end
 	) then (
 		with_tty (fun tty ->
-			Some (run_inner opts.run_options ~tty fd)
+			Some (run_inner opts ~tty fd)
 		)
 	) else None
 
