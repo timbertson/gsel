@@ -34,9 +34,9 @@ let ignore_signal (s:GtkSignal.id) = ignore s
 
 
 class server fd = object
-	method accept =
+	method accept : source =
 		let stream, _addr = Unix.accept fd in
-		new stream_input stream
+		new socket_input stream
 end
 
 
@@ -68,74 +68,43 @@ let markup str indexes =
 	String.concat "" parts
 ;;
 
-let run_client fd =
-	let source = (new stdin_input) in
-	let dest = Unix.out_channel_of_descr fd in
-	let rec loop () =
-		match source#read_line with
-			| Some line ->
-				output_string dest line;
-				output_char dest '\n';
-				loop ()
-
-			| None ->
-				debug "input complete";
-				output_char dest '\000';
-				output_char dest '\n';
-				flush dest;
-				()
-	in
-	let (_:Thread.t) = Thread.create (fun () ->
-		init_background_thread ();
-		loop ()
-	) () in
-
-	let response_stream = Unix.in_channel_of_descr fd in
-	let typ = input_char response_stream in
-	let response = input_line response_stream in
-	let status = match typ with
-		| 'y' -> print_string response; 0
-		| 'n' -> prerr_string response; 0
-		| t -> failwith (Printf.sprintf "Unknown response type %c" t)
-	in
-	exit status
-;;
-
-
-let input_loop ~source ~modify_all_items ~finish () =
+let input_loop ~source ~append_query ~modify_all_items ~finish () =
 	let i = ref 0 in
 	let nonempty_line = ref false in
 
 	let max_items = try int_of_string (Unix.getenv "GSEL_MAX_ITEMS") with Not_found -> 10000 in
-	let rec loop () =
-		match source#read_line with
-			| Some line ->
-				if not !nonempty_line && String.length line > 0 then
-					nonempty_line := true
-				;
-				debug "item[%d]: %s" !i line;
-				modify_all_items (fun all_items ->
-					SortedSet.add all_items {
-						text=line;
-						match_text=String.lowercase line;
-						input_index=(!i);
-					}
-				);
-				i := !i+1;
+	source#consume (function
+		| Options _ -> Continue
+		| Query text ->
+			debug "append query text: %s" text;
+			append_query text;
+			Continue
+		| Item line ->
+			if not !nonempty_line && String.length line > 0 then
+				nonempty_line := true
+			;
+			debug "item[%d]: %s" !i line;
+			modify_all_items (fun all_items ->
+				SortedSet.add all_items {
+					text=line;
+					match_text=String.lowercase line;
+					input_index=(!i);
+				}
+			);
+			i := !i+1;
 
-				(* give UI a chance to keep up *)
-				if ((!i mod 500) = 0) then (
-					Thread.delay 0.1
-				);
+			(* give UI a chance to keep up *)
+			if ((!i mod 500) = 0) then (
+				Thread.delay 0.1
+			);
 
-				if (!i = max_items) then (
-					debug "capping items at %d" max_items
-				) else (
-					loop ()
-				)
-			| None -> (debug "input complete"; ())
-	in
-	loop ();
+			if (!i = max_items) then (
+				debug "capping items at %d" max_items;
+				Stop
+			) else (
+				Continue
+			)
+	);
 	if not !nonempty_line then (
 		finish (Error "No input received");
 	)
@@ -217,6 +186,7 @@ let init_xlib () =
 ;;
 
 let gui_inner ~source ~display_state ~opts ~exit () =
+	debug "gui running from source: %s" source#repr;
 	let text_color = display_state.text_color in
 	let xlib = display_state.xlib in
 	let window = GWindow.dialog
@@ -307,15 +277,15 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 	let selected_index = ref 0 in
 	let get_selected_item () = List.nth !shown_items !selected_index in
 
-	let with_mutex : (unit -> unit) -> unit =
-		let m = Mutex.create () in
-		fun fn ->
+	let items_mutex = Mutex.create () in
+	let with_mutex (type a) : Mutex.t -> (unit -> a) -> a =
+		fun m fn ->
 			Mutex.lock m;
-			let () = try fn ()
+			let rv = try fn ()
 				with e -> (Mutex.unlock m; raise e) in
-			Mutex.unlock m
+			Mutex.unlock m;
+			rv
 	in
-
 
 	let update_current_selection i =
 		debug "selected index is now %d" i;
@@ -354,6 +324,7 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 	in
 
 	let redraw reason =
+		let all_items = with_mutex items_mutex (fun () -> !all_items) in
 		list_store#clear ();
 		let max_recall = 2000 in
 		let max_display = 20 in
@@ -367,14 +338,14 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 						| Some (score, indexes) -> {result_source = item; result_score = score; match_indexes = indexes} :: (loop (n-1) tail)
 						| None -> loop n tail
 			in
-			loop max_recall !all_items
+			loop max_recall all_items
 		in
 
 		(* after grabbing the first `max_recall` matches by length, score them in descending order *)
 		let ordered = List.stable_sort (fun a b -> compare (b.result_score) (a.result_score)) recalled in
 		shown_items := list_take max_display ordered;
 
-		debug "redraw! %d items of %d" (List.length !shown_items) (List.length !all_items);
+		debug "redraw! %d items of %d" (List.length !shown_items) (List.length all_items);
 		flush stdout;
 		(* TODO: overwrite text, rather than always recreating each item? *)
 		let rec loop i entries =
@@ -405,6 +376,7 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 		redraw New_query
 	in
 
+	let append_query text : unit = input#append_text text in
 	ignore_signal (input#connect#notify_text update_query);
 
 	let selection_made ?event () =
@@ -536,12 +508,15 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 
 		(* input_loop can only mutate state via the stuff we pass it, so
 		* make sure everything here is thread-safe *)
-		let modify_all_items fn = with_mutex (fun () ->
+		let modify_all_items fn = with_mutex items_mutex (fun () ->
 			all_items := fn !all_items
+		) in
+		let append_query = GtkThread.sync (fun text ->
+			append_query text
 		) in
 		let finish = GtkThread.sync (finish ?event:None) in
 		let () =
-			try input_loop ~source ~modify_all_items ~finish ();
+			try input_loop ~source ~append_query ~modify_all_items ~finish ();
 			with e -> prerr_string (Printexc.to_string e)
 		in
 		input_complete := true;
@@ -575,47 +550,50 @@ let gui_loop ~server ~opts () =
 					init_background_thread ();
 					let display_state = ref None in
 					while true do
-						let source = server#accept in
-						match source#read_line with
-							| None -> () (* connection closed; ignore *)
-							| Some (line:string) ->
-									debug "received serialized opts: %s" line;
-									let opts = run_options_of_sexp (Sexp.of_string line) in
-									let display_state = match !display_state with
-										| Some display_state -> display_state
-										| None ->
-												(* XXX this is a bit hacky... We're just adopting $DISPLAY
-												 * from the first client that connects... *)
-												Option.may opts.display_env (Unix.putenv "DISPLAY");
-												let d = init_display () in
-												display_state := Some d;
-												d
-									in
-									GtkThread.sync (gui_inner
-										~source ~display_state ~opts
-										~exit:(fun _response ->
-											debug "session ended"
-										))
-									()
+						let source : source = server#accept in
+						try (
+							match source#read_options_header with
+								| None -> () (* connection closed; ignore *)
+								| Some opts ->
+										debug "received serialized opts: %s" opts;
+										let opts = run_options_of_sexp (Sexp.of_string opts) in
+										let display_state = match !display_state with
+											| Some display_state -> display_state
+											| None ->
+													(* XXX this is a bit hacky... We're just adopting $DISPLAY
+													 * from the first client that connects... *)
+													Option.may opts.display_env (Unix.putenv "DISPLAY");
+													let d = init_display () in
+													display_state := Some d;
+													d
+										in
+										GtkThread.sync (gui_inner
+											~source ~display_state ~opts
+											~exit:(fun _response ->
+												debug "session ended"
+											))
+										()
+						) with e -> (
+							let desc = Printexc.to_string e in
+							debug "Killing client: %s" desc;
+							try (source#respond (Error desc)) with _ -> ()
+						)
 					done
 				) () in
 				GMain.main ()
 			end
 		| None -> begin
-				if Unix.isatty Unix.stdin then (
-					(* XXX set gui message? *)
-					prerr_endline "WARN: stdin is a terminal"
-				);
-
-				gui_inner
-					~source:(new stdin_input)
-					~display_state:(init_display ())
-					~opts
-					~exit:(fun response ->
-						Pervasives.exit (match response with Success _ -> 0 | Cancelled | Error _ -> 1)
-					)
-					();
-				GMain.main ()
+				with_tty (fun tty ->
+					gui_inner
+						~source:(terminal_source ~tty)
+						~display_state:(init_display ())
+						~opts
+						~exit:(fun response ->
+							Pervasives.exit (match response with Success _ -> 0 | Cancelled | Error _ -> 1)
+						)
+						();
+					GMain.main ()
+				)
 		end
 ;;
 

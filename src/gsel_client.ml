@@ -2,7 +2,7 @@ open Log
 open Gsel_common
 open Sexplib
 
-let run_inner opts fd =
+let run_inner opts ~tty fd =
 	(* the server agressively closes the socket when it's
 	 * done handling a request. So the client can ignore SIGPIPE *)
 	Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
@@ -13,40 +13,49 @@ let run_inner opts fd =
 	let serialized_opts = Sexp.to_string_mach
 		(sexp_of_run_options opts) in
 	debug "serialized opts: %s" serialized_opts;
+	output_char dest rpc.options;
 	output_string dest serialized_opts;
-	output_char dest '\n';
+	output_char dest rpc.nl;
 	flush dest;
 
-	let source = (new stdin_input) in
-	let rec loop () =
-		try begin
-			match source#read_line with
-				| Some line ->
-					output_string dest line;
-					output_char dest '\n';
-					loop ()
-
-				| None ->
-					debug "input complete";
-					output_char dest '\000';
-					output_char dest '\n';
-					flush dest;
-					()
-		end with e -> debug "input loop failed with %s" (Printexc.to_string e);
+	let (_:Thread.t) =
+		let source = terminal_source ~tty in
+		let run () =
+			try (
+				source#consume (function
+					| Options _ -> failwith "options not supported"
+					| Item line ->
+						debug "sending line: \"%s\"" (String.escaped line);
+						output_char dest rpc.item;
+						output_string dest line;
+						output_char dest rpc.nl;
+						Continue
+					| Query q ->
+						debug "sending query string: \"%s\"" (String.escaped q);
+						output_char dest rpc.query;
+						output_string dest q;
+						output_char dest rpc.nl;
+						flush dest;
+						Continue
+				)
+			) with e -> debug "input loop failed with %s" (Printexc.to_string e);
+		in
+		Thread.create (fun () ->
+			init_background_thread ();
+			run ()
+		) ()
 	in
-	let (_:Thread.t) = Thread.create (fun () ->
-		init_background_thread ();
-		loop ()
-	) () in
 
 	let response_stream = Unix.in_channel_of_descr fd in
-	let typ = input_char response_stream in
+	let mode = input_char response_stream in
 	let response = input_line response_stream in
-	debug "got response %c|%s" typ response;
-	let status = match typ with
-		| 'y' -> print_endline response; 0
-		| 'n' -> prerr_endline response; 1
-		| t -> failwith (Printf.sprintf "Unknown response type %c" t)
+	debug "got response %c|%s" mode response;
+	let status =
+		if mode = rpc.selection
+			then (print_endline response; 0)
+		else if mode = rpc.failure
+			then (prerr_endline response; 1)
+		else failwith (Printf.sprintf "Unknown response type %c" mode)
 	in
 	status
 ;;
@@ -61,7 +70,9 @@ let run opts =
 			false
 		end
 	) then (
-		Some (run_inner opts.run_options fd)
+		with_tty (fun tty ->
+			Some (run_inner opts.run_options ~tty fd)
+		)
 	) else None
 
 let main () =
