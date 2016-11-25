@@ -88,7 +88,7 @@ let input_loop ~source ~append_query ~modify_all_items ~finish () =
 			modify_all_items (fun all_items ->
 				SortedSet.add all_items {
 					text=line;
-					match_text=String.lowercase line;
+					match_text=String.lowercase_ascii line;
 					input_index=(!i);
 				}
 			);
@@ -373,7 +373,7 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 	in
 
 	let update_query = fun text ->
-		last_query := String.lowercase text;
+		last_query := String.lowercase_ascii text;
 		redraw New_query
 	in
 
