@@ -1,6 +1,6 @@
-<src/*gui*>: package(lablgtk2, xlib)
+<src/*gui*>: use_gselui
 <src/gsel_common.ml>: package(sexplib, ppx_deriving, ppx_sexp_conv)
 <test.*>: package(oUnit)
-true: package(unix, str, threads, sexplib), thread, safe_string
+true: package(unix, str, threads, sexplib, ctypes.foreign), thread, safe_string, use_gselui
 "src": include
 "gtkparasite": -traverse

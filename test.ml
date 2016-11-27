@@ -49,7 +49,7 @@ let build_entry text =
 	let open Search in
 	{
 		text = text;
-		match_text = String.lowercase text;
+		match_text = String.lowercase_ascii text;
 		input_index = 0;
 	}
 

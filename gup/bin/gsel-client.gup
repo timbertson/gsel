@@ -1,3 +1,3 @@
 #!bash -eu
-gup -u ../main_client.native
-cp ../main_client.native "$1"
+gup -u ../_build/main_client.native
+ln -s ../_build/main_client.native "$1"
