@@ -46,6 +46,17 @@ let findi lst pred =
 	in
 	loop 0 lst
 
+let escape_html =
+	let amp = Str.regexp "&" in
+	let special = Str.regexp "[<>]" in
+	fun s -> s
+		|> Str.global_replace amp "&amp;"
+		|> Str.global_substitute special (function
+			| ">" -> "&gt;"
+			| "<" -> "&lt;"
+			| _ -> failwith "impossible"
+		)
+
 let markup_escape text = ignore text; failwith "TODO"
 
 let markup str indexes =
@@ -105,11 +116,6 @@ let input_loop ~source ~append_query ~modify_all_items ~finish () =
 
 let gui_inner ~source ~opts ~exit () =
 	debug "gui running from source: %s" source#repr;
-	let finish response : unit =
-		source#respond response;
-		Gselui.hide ()
-	in
-
 	let all_items = ref (SortedSet.create ()) in
 	let shown_items = ref [] in
 	let last_query = ref "" in
@@ -117,6 +123,7 @@ let gui_inner ~source ~opts ~exit () =
 	let get_selected_item () = List.nth !shown_items !selected_index in
 
 	let items_mutex = Mutex.create () in
+	let query_mutex = Mutex.create () in
 	let with_mutex (type a) : Mutex.t -> (unit -> a) -> a =
 		fun m fn ->
 			Mutex.lock m;
@@ -131,8 +138,17 @@ let gui_inner ~source ~opts ~exit () =
 		selected_index := i
 	in
 
+	let ui_ = ref None in
+	let with_ui fn =
+		match !ui_ with
+			| Some ui -> fn ui
+			| None -> ()
+	in
+
 	let redraw reason =
 		let all_items = with_mutex items_mutex (fun () -> !all_items) in
+		let last_query = with_mutex query_mutex (fun () -> !last_query) in
+		let last_query = String.lowercase_ascii last_query in
 		let max_recall = 2000 in
 		let max_display = 20 in
 
@@ -141,7 +157,7 @@ let gui_inner ~source ~opts ~exit () =
 			if n < 1 then [] else match items with
 				| [] -> []
 				| item :: tail ->
-					match Search.score !last_query item with
+					match Search.score last_query item with
 						| Some (score, indexes) -> {result_source = item; result_score = score; match_indexes = indexes} :: (loop (n-1) tail)
 						| None -> loop n tail
 			in
@@ -163,22 +179,24 @@ let gui_inner ~source ~opts ~exit () =
 				findi !shown_items (fun entry -> entry.result_source.input_index = id)
 		in
 		let set_results ~selected results =
-			Gselui.set_results results (match selected with
-				Some i -> i | None -> -1 )
+			with_ui (fun ui ->
+				Gselui.set_results ui results (match selected with Some i -> i | None -> -1)
+			)
 		in
 		(* TODO: escape text? *)
 		set_results ~selected:updated_idx (!shown_items |> List.map (fun item -> item.result_source.text))
 	in
 
 	let query_changed = fun text ->
-		last_query := String.lowercase_ascii text;
+		with_mutex query_mutex (fun () ->
+			last_query := text;
+		);
 		redraw New_query
 	in
 
-	let append_query text : unit =
-		let query = (!last_query ^ text) in
-		Gselui.set_query query;
-		query_changed query
+	let finish response : unit =
+		source#respond response;
+		with_ui (Gselui.hide)
 	in
 
 	let selection_made () =
@@ -193,33 +211,51 @@ let gui_inner ~source ~opts ~exit () =
 		end
 	in
 
-	Gselui.show ~query_changed ~selection_changed ~selection_made ();
+	let terminate () = exit Cancelled in
+	let ui = Gselui.show ~query_changed ~selection_changed ~selection_made ~terminate () in
+	ui_ := Some ui;
 
-	let input_complete = ref false in
-	let (_:Thread.t) = Thread.create (fun () ->
+	(
 		init_background_thread ();
+		let input_complete = ref false in
+		debug "input thread running";
 		(* prioritize GUI setup over input processing *)
 		let (_, _, _) = Unix.select [] [] [] 0.2 in
 
 		(* input_loop can only mutate state via the stuff we pass it, so
 		* make sure everything here is thread-safe *)
-		let modify_all_items fn = with_mutex items_mutex (fun () ->
-			failwith "TODO"
-			(* TODO: redraw if it's been >500ms since last redraw *)
-			(* all_items := fn !all_items *)
-		) in
-		let append_query = (fun text ->
-			append_query "";
-			failwith "TODO"
-		) in
+		let modify_all_items =
+			let last_redraw = ref (Unix.time ()) in
+			fun fn -> (
+				with_mutex items_mutex (fun () -> all_items := fn !all_items);
+				let current_time = Unix.time () in
+				if (current_time -. !last_redraw) > 0.5 then (
+					debug "redrawing";
+					last_redraw := current_time;
+					redraw New_input
+				)
+			)
+		in
+
+		let append_query text : unit =
+			let query = with_mutex query_mutex (fun () ->
+				let query = !last_query ^ text in
+				last_query := query;
+				query
+			) in
+			Gselui.set_query ui query;
+			redraw New_query
+		in
+
 		let () =
 			try input_loop ~source ~append_query ~modify_all_items ~finish ();
 			with e -> prerr_string (Printexc.to_string e)
 		in
+		debug "input loop complete";
 		input_complete := true;
 		redraw New_input;
-	) () in
-	()
+		Gselui.wait ui
+	)
 ;;
 
 let gui_loop ~server ~opts () =

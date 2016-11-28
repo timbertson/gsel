@@ -10,7 +10,7 @@ let () = dispatch begin function
 		(*			(S[A"-dllib"; A"-lcryptokit"; A"-cclib"; A"-lcryptokit"]); *)
 
 	let tags = ["link"; "ocaml"; "native"; "use_gselui"] in
-	let cmd = [A"-cclib"; A ("-L."); A"-cclib"; A"-lgselui";] in
+	let cmd = [A"-cclib"; A"-L."; A"-cclib"; A"-lgselui"; A"-cclib"; A"-Wl,--export-dynamic"] in
 	let cmd = match destdir with
 		| Some destdir -> cmd @ [A"-cclib"; A("-Wl,-rpath,"^destdir^"/lib")]
 		| None -> cmd
