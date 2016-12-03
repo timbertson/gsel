@@ -123,18 +123,25 @@ module Shared : sig
 	val read : 'a t -> 'a
 	val update : ('a -> 'a) -> 'a t -> unit
 	val mutate : ('a ref -> 'r) -> 'a t -> 'r
+	val mutate_full : (Mutex.t -> 'a ref -> 'r) -> 'a t -> 'r
 end = struct
 	type 'a t = Mutex.t * 'a ref
 	let init item = (Mutex.create (), item)
-	let mutate fn (m, var) =
+	let mutate_full fn (m, var) =
 		Mutex.lock m;
-		let rv = try fn var
+		let rv = try fn m var
 			with e -> (Mutex.unlock m; raise e) in
 		Mutex.unlock m;
 		rv
+	let mutate fn = mutate_full (fun _ r -> fn r)
 	let update fn = mutate (fun r -> r := fn !r)
 	let read v = mutate (!) v
 end
+
+type redraw_state = {
+	dirty : bool;
+	modified : Condition.t;
+}
 
 let gui_inner ~source ~opts ~exit () =
 	debug "gui running from source: %s" source#repr;
@@ -163,6 +170,42 @@ let gui_inner ~source ~opts ~exit () =
 			| Some ui -> fn ui
 			| None -> ()
 	in
+
+	let redraw_state = Shared.init (ref {
+		dirty = false;
+		modified = Condition.create ();
+	}) in
+
+	let force_redraw ?state () =
+		let update = (fun { modified } ->
+			with_ui (Gselui.results_changed);
+			{ modified; dirty = false }
+		) in
+		match state with
+			| Some state -> state := update !state (* mutex held *)
+			| None -> redraw_state |> Shared.update update
+	in
+
+	let mark_dirty () =
+		redraw_state |> Shared.update (fun { modified } ->
+			Condition.signal modified;
+			{ modified; dirty = true }
+		)
+	in
+
+	let (_:Thread.t) = Thread.create (fun () ->
+		init_background_thread ();
+		while true do
+			redraw_state |> Shared.mutate_full (fun mutex state ->
+				let { modified; dirty } = !state in
+				if dirty then force_redraw ~state ();
+				Condition.wait modified mutex;
+			);
+			(* (* debounce - collect redraws for 1/4 second after touch *) *)
+			let (_, _, _) = Unix.select [] [] [] 0.25 in
+			()
+		done
+	) () in
 
 	let redraw reason =
 		let all_items = Shared.read all_items in
@@ -203,7 +246,9 @@ let gui_inner ~source ~opts ~exit () =
 			flush stdout;
 			{ items; selected_index }
 		);
-		with_ui (Gselui.results_changed)
+		match reason with
+			| New_query -> force_redraw ()
+			| New_input -> mark_dirty () (* this happens a lot, do debounce redraws *)
 	in
 
 	let query_changed : string -> unit = fun text ->
@@ -213,7 +258,9 @@ let gui_inner ~source ~opts ~exit () =
 
 	let finish response : unit =
 		source#respond response;
-		with_ui (Gselui.hide)
+		debug "hiding UI";
+		with_ui (Gselui.hide);
+		exit response
 	in
 
 	let selection_made () =
@@ -246,21 +293,11 @@ let gui_inner ~source ~opts ~exit () =
 		let input_complete = ref false in
 		debug "input thread running";
 		(* prioritize GUI setup over input processing *)
-		let (_, _, _) = Unix.select [] [] [] 0.2 in
+		let (_, _, _) = Unix.select [] [] [] 0.1 in
 
-		(* input_loop can only mutate state via the stuff we pass it, so
-		* make sure everything here is thread-safe *)
-		let modify_all_items =
-			let last_redraw = ref (Unix.time ()) in
-			fun fn -> (
-				all_items |> Shared.update fn;
-				let current_time = Unix.time () in
-				if (current_time -. !last_redraw) > 0.5 then (
-					debug "redrawing";
-					last_redraw := current_time;
-					redraw New_input
-				)
-			)
+		let modify_all_items fn =
+			all_items |> Shared.update fn;
+			redraw New_input
 		in
 
 		let append_query text : unit =
@@ -325,6 +362,7 @@ let gui_loop ~server ~opts () =
 						~source:(terminal_source ~tty opts)
 						~opts:opts.run_options
 						~exit:(fun response ->
+							debug "exiting";
 							Pervasives.exit (match response with Success _ -> 0 | Cancelled | Error _ -> 1)
 						) ()
 				)
