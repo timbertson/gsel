@@ -1,7 +1,7 @@
 #!bash -eu
 gup --always
 if [[ "$2" = main_gui.* ]]; then
-	gup -u libgselui.so
+	gup -u lib/libgselui.so
 fi
 cd ..
 ocamlbuild -use-ocamlfind -build-dir "_build" -no-links -cflag -warn-error -cflag +a "$2"

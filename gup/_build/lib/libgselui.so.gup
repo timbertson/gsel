@@ -1,4 +1,4 @@
 #!bash -eux
-src="../src/gselui.vala"
+src="../../src/gselui.vala"
 gup -u "$src"
 valac --pkg gtk+-3.0 --library gselui "$src" -X -fPIC -X -shared -o "$1"

@@ -122,7 +122,8 @@ let gui_inner ~source ~opts ~exit () =
 	let selected_index = ref 0 in
 	let get_selected_item () = List.nth !shown_items !selected_index in
 
-	let items_mutex = Mutex.create () in
+	let all_items_mutex = Mutex.create () in
+	let shown_items_mutex = Mutex.create () in
 	let query_mutex = Mutex.create () in
 	let with_mutex (type a) : Mutex.t -> (unit -> a) -> a =
 		fun m fn ->
@@ -146,7 +147,7 @@ let gui_inner ~source ~opts ~exit () =
 	in
 
 	let redraw reason =
-		let all_items = with_mutex items_mutex (fun () -> !all_items) in
+		let all_items = with_mutex all_items_mutex (fun () -> !all_items) in
 		let last_query = with_mutex query_mutex (fun () -> !last_query) in
 		let last_query = String.lowercase_ascii last_query in
 		let max_recall = 2000 in
@@ -166,25 +167,21 @@ let gui_inner ~source ~opts ~exit () =
 
 		(* after grabbing the first `max_recall` matches by length, score them in descending order *)
 		let ordered = List.stable_sort (fun a b -> compare (b.result_score) (a.result_score)) recalled in
-		shown_items := list_take max_display ordered;
+		with_mutex shown_items_mutex (fun () ->
+			shown_items := list_take max_display ordered;
 
-		debug "redraw! %d items of %d" (List.length !shown_items) (List.length all_items);
-		flush stdout;
-		let updated_idx = match reason, !selected_index with
-			| New_query, _ -> None
-			| _, 0 -> None
-			| New_input, i ->
-				(* maintain selection if possible (but only when selected_index>0) *)
-				let id = (get_selected_item ()).result_source.input_index in
-				findi !shown_items (fun entry -> entry.result_source.input_index = id)
-		in
-		let set_results ~selected results =
-			with_ui (fun ui ->
-				Gselui.set_results ui results (match selected with Some i -> i | None -> -1)
-			)
-		in
-		(* TODO: escape text? *)
-		set_results ~selected:updated_idx (!shown_items |> List.map (fun item -> item.result_source.text))
+			debug "redraw! %d items of %d" (List.length !shown_items) (List.length all_items);
+			flush stdout;
+			selected_index := Option.default (match reason, !selected_index with
+				| New_query, _ -> None
+				| _, 0 -> None
+				| New_input, i ->
+					(* maintain selection if possible (but only when selected_index>0) *)
+					let id = (get_selected_item ()).result_source.input_index in
+					findi !shown_items (fun entry -> entry.result_source.input_index = id)
+			) 0
+		);
+		with_ui (Gselui.results_changed)
 	in
 
 	let query_changed = fun text ->
@@ -212,7 +209,16 @@ let gui_inner ~source ~opts ~exit () =
 	in
 
 	let terminate () = exit Cancelled in
-	let ui = Gselui.show ~query_changed ~selection_changed ~selection_made ~terminate () in
+	let iter fn =
+		with_mutex shown_items_mutex (fun () ->
+			List.iter (fun item ->
+				fn (markup item.result_source.text item.match_indexes)
+			) !shown_items;
+			!selected_index
+		)
+	in
+
+	let ui = Gselui.show ~query_changed ~iter ~selection_changed ~selection_made ~terminate () in
 	ui_ := Some ui;
 
 	(
@@ -227,7 +233,7 @@ let gui_inner ~source ~opts ~exit () =
 		let modify_all_items =
 			let last_redraw = ref (Unix.time ()) in
 			fun fn -> (
-				with_mutex items_mutex (fun () -> all_items := fn !all_items);
+				with_mutex all_items_mutex (fun () -> all_items := fn !all_items);
 				let current_time = Unix.time () in
 				if (current_time -. !last_redraw) > 0.5 then (
 					debug "redrawing";

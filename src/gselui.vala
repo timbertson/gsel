@@ -10,6 +10,12 @@ namespace Gsel {
 	[CCode (has_target = false)]
 	public delegate void StringFn(string x);
 
+	[CCode (has_target = true)]
+	public delegate void StringClosure(string x);
+
+	[CCode (has_target = false)]
+	public delegate int ResultIterFn(StringClosure f);
+
 	[CCode (has_target = false)]
 	public delegate void IntFn(int x);
 
@@ -25,6 +31,7 @@ namespace Gsel {
 
 	public struct State {
 		StringFn query_changed;
+		ResultIterFn iter;
 		IntFn selection_changed;
 		VoidFn selection_made;
 		VoidFn exit;
@@ -37,6 +44,7 @@ namespace Gsel {
 		private Entry entry;
 		private Window window;
 		private bool hidden;
+		private int selected;
 
 		public UiThread(State state) {
 			this.state = state;
@@ -70,18 +78,20 @@ namespace Gsel {
 			return null;
 		}
 
-		public void set_query(string text) {
-			var ownText = text.dup();
+		public void set_query(owned string text) {
 			Idle.add(() => {
-				this.entry.text = ownText;
+				this.entry.text = text;
 				return Source.REMOVE;
 			});
 		}
 
-		public void set_results(string[] results) {
-			/* var ownResults = results.dup(); */
+		public void results_changed() {
 			Idle.add(() => {
-				this.entry.text = "TODO";
+				this.selected = this.state.iter((item) => {
+					/* foreach (string result in results) { */
+						stdout.printf("TODO: result %s (%x)\n", item, (int)item);
+					/* } */
+				});
 				return Source.REMOVE;
 			});
 		}
@@ -99,9 +109,15 @@ namespace Gsel {
 		}
 	}
 
-	public State? show(StringFn query_changed, IntFn selection_changed, VoidFn selection_made, VoidFn exit) {
+	public State? show(
+			StringFn query_changed,
+			ResultIterFn iter,
+			IntFn selection_changed,
+			VoidFn selection_made,
+			VoidFn exit) {
 		var state = State () {
 			query_changed = query_changed,
+			iter = iter,
 			selection_changed = selection_changed,
 			selection_made = selection_made,
 			exit = exit
@@ -111,12 +127,20 @@ namespace Gsel {
 	}
 
 	public void set_query(State state, string text) {
-		state.thread->set_query(text);
+		state.thread->set_query(text.dup());
 	}
 
-	public void set_results(State state, string[] markup, int selected) {
-		stdout.printf("TODO: set_results\n");
+	public void results_changed(State state) {
+		state.thread->results_changed();
 	}
+
+	/* public void update_results(State state, int selected) { */
+	/* 	string[] owned_items = new string[len]; */
+	/* 	for (int i=0; i<len; i++) { */
+	/* 		owned_items[i] = items[i].dup(); */
+	/* 	} */
+	/* 	state.thread->set_results(owned_items, selected); */
+	/* } */
 
 	public void hide(owned State state) {
 		state.thread->hide();
