@@ -46,7 +46,7 @@ let findi lst pred =
 	in
 	loop 0 lst
 
-let escape_html =
+let markup_escape =
 	let amp = Str.regexp "&" in
 	let special = Str.regexp "[<>]" in
 	fun s -> s
@@ -57,7 +57,10 @@ let escape_html =
 			| _ -> failwith "impossible"
 		)
 
-let markup_escape text = ignore text; failwith "TODO"
+type displayed_items = {
+	items: search_result list;
+	selected_index: int;
+}
 
 let markup str indexes =
 	let open Search.Highlight in
@@ -114,29 +117,44 @@ let input_loop ~source ~append_query ~modify_all_items ~finish () =
 	)
 ;;
 
+module Shared : sig
+	type 'a t
+	val init : ('a ref) -> 'a t
+	val read : 'a t -> 'a
+	val update : ('a -> 'a) -> 'a t -> unit
+	val mutate : ('a ref -> 'r) -> 'a t -> 'r
+end = struct
+	type 'a t = Mutex.t * 'a ref
+	let init item = (Mutex.create (), item)
+	let mutate fn (m, var) =
+		Mutex.lock m;
+		let rv = try fn var
+			with e -> (Mutex.unlock m; raise e) in
+		Mutex.unlock m;
+		rv
+	let update fn = mutate (fun r -> r := fn !r)
+	let read v = mutate (!) v
+end
+
 let gui_inner ~source ~opts ~exit () =
 	debug "gui running from source: %s" source#repr;
-	let all_items = ref (SortedSet.create ()) in
-	let shown_items = ref [] in
-	let last_query = ref "" in
-	let selected_index = ref 0 in
-	let get_selected_item () = List.nth !shown_items !selected_index in
-
-	let all_items_mutex = Mutex.create () in
-	let shown_items_mutex = Mutex.create () in
-	let query_mutex = Mutex.create () in
-	let with_mutex (type a) : Mutex.t -> (unit -> a) -> a =
-		fun m fn ->
-			Mutex.lock m;
-			let rv = try fn ()
-				with e -> (Mutex.unlock m; raise e) in
-			Mutex.unlock m;
-			rv
+	let get_selected_item { items; selected_index } =
+		try Some (List.nth items selected_index)
+		with Not_found -> None
 	in
+
+	let all_items = Shared.init (ref (SortedSet.create ())) in
+	let displayed_items = Shared.init (ref { items = []; selected_index = 0 }) in
+	let last_query = Shared.init (ref "") in
 
 	let selection_changed i =
 		debug "selected index is now %d" i;
-		selected_index := i
+		displayed_items |> Shared.update (fun shown ->
+			let max_idx = (List.length shown.items) - 1 in
+			{ shown with
+				selected_index = (min i max_idx);
+			}
+		)
 	in
 
 	let ui_ = ref None in
@@ -147,8 +165,8 @@ let gui_inner ~source ~opts ~exit () =
 	in
 
 	let redraw reason =
-		let all_items = with_mutex all_items_mutex (fun () -> !all_items) in
-		let last_query = with_mutex query_mutex (fun () -> !last_query) in
+		let all_items = Shared.read all_items in
+		let last_query = Shared.read last_query in
 		let last_query = String.lowercase_ascii last_query in
 		let max_recall = 2000 in
 		let max_display = 20 in
@@ -167,27 +185,29 @@ let gui_inner ~source ~opts ~exit () =
 
 		(* after grabbing the first `max_recall` matches by length, score them in descending order *)
 		let ordered = List.stable_sort (fun a b -> compare (b.result_score) (a.result_score)) recalled in
-		with_mutex shown_items_mutex (fun () ->
-			shown_items := list_take max_display ordered;
-
-			debug "redraw! %d items of %d" (List.length !shown_items) (List.length all_items);
-			flush stdout;
-			selected_index := Option.default (match reason, !selected_index with
+		displayed_items |> Shared.update (fun displayed_items ->
+			let items = list_take max_display ordered in
+			let selected_index = (Option.default (match reason, displayed_items.selected_index with
 				| New_query, _ -> None
 				| _, 0 -> None
 				| New_input, i ->
 					(* maintain selection if possible (but only when selected_index>0) *)
-					let id = (get_selected_item ()).result_source.input_index in
-					findi !shown_items (fun entry -> entry.result_source.input_index = id)
-			) 0
+					get_selected_item (displayed_items) |> Option.bind (fun item ->
+						let id = item.result_source.input_index in
+						let matcher = (fun entry -> entry.result_source.input_index = id) in
+						findi displayed_items.items matcher
+					)
+			) 0) in
+
+			debug "redraw! %d items of %d" (List.length displayed_items.items) (List.length all_items);
+			flush stdout;
+			{ items; selected_index }
 		);
 		with_ui (Gselui.results_changed)
 	in
 
-	let query_changed = fun text ->
-		with_mutex query_mutex (fun () ->
-			last_query := text;
-		);
+	let query_changed : string -> unit = fun text ->
+		last_query |> Shared.update (fun _ -> text);
 		redraw New_query
 	in
 
@@ -197,25 +217,25 @@ let gui_inner ~source ~opts ~exit () =
 	in
 
 	let selection_made () =
-		if !shown_items = [] then () else begin
-			let {result_source=entry;_} = get_selected_item () in
-			debug "selected item[%d]: %s" entry.input_index entry.text;
-			let text = if opts.print_index
-				then string_of_int entry.input_index
-				else entry.text
-			in
-			finish (Success text)
-		end
+		let displayed_items = displayed_items |> Shared.read in
+		match get_selected_item displayed_items with
+			| Some {result_source=entry;_} ->
+				debug "selected item[%d]: %s" entry.input_index entry.text;
+				let text = if opts.print_index
+					then string_of_int entry.input_index
+					else entry.text
+				in
+				finish (Success text)
+			| None -> ()
 	in
 
 	let terminate () = exit Cancelled in
 	let iter fn =
-		with_mutex shown_items_mutex (fun () ->
-			List.iter (fun item ->
-				fn (markup item.result_source.text item.match_indexes)
-			) !shown_items;
-			!selected_index
-		)
+		let displayed_items = displayed_items |> Shared.read in
+		List.iter (fun item ->
+			fn (markup item.result_source.text item.match_indexes)
+		) displayed_items.items;
+		displayed_items.selected_index
 	in
 
 	let ui = Gselui.show ~query_changed ~iter ~selection_changed ~selection_made ~terminate () in
@@ -233,7 +253,7 @@ let gui_inner ~source ~opts ~exit () =
 		let modify_all_items =
 			let last_redraw = ref (Unix.time ()) in
 			fun fn -> (
-				with_mutex all_items_mutex (fun () -> all_items := fn !all_items);
+				all_items |> Shared.update fn;
 				let current_time = Unix.time () in
 				if (current_time -. !last_redraw) > 0.5 then (
 					debug "redrawing";
@@ -244,7 +264,7 @@ let gui_inner ~source ~opts ~exit () =
 		in
 
 		let append_query text : unit =
-			let query = with_mutex query_mutex (fun () ->
+			let query = last_query |> Shared.mutate (fun last_query ->
 				let query = !last_query ^ text in
 				last_query := query;
 				query
