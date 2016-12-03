@@ -4,3 +4,4 @@
 true: package(unix, str, threads, sexplib, ctypes.foreign), thread, safe_string, use_gselui
 "src": include
 "gtkparasite": -traverse
+"nix": -traverse

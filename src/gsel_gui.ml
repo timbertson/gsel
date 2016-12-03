@@ -68,7 +68,7 @@ let markup str indexes =
 	let parts = List.map (function
 		(* XXX define a style somewhere or use programmatic style attributes rather than
 		 * building ugly html strings *)
-		| Highlighted s -> "<span color=\"#eeeeee\" weight=\"bold\" underline=\"low\" underline_color=\"#888888\">" ^ markup_escape s ^ "</span>"
+		| Highlighted s -> "<span color=\"#ffffff\" weight=\"bold\" underline=\"low\" underline_color=\"#dddddd\">" ^ markup_escape s ^ "</span>"
 		| Plain s -> markup_escape s
 	) parts in
 	String.concat "" parts

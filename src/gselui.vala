@@ -27,7 +27,6 @@ namespace Gsel {
 		string[] args = {};
 		unowned string[] _args = args;
 		Gtk.init (ref _args);
-		stdout.printf("GUI initialize()\n");
 	}
 
 	public struct State {
@@ -51,27 +50,22 @@ namespace Gsel {
 		public UiThread(State state) {
 			this.state = state;
 			this.hidden = false;
-			this.window = new Gtk.Window ();
-			this.window.title = "First GTK+ Program";
-			this.window.border_width = 10;
-			this.window.window_position = WindowPosition.CENTER;
-			this.window.set_default_size (350, 70);
-			this.window.destroy.connect (Gtk.main_quit);
-			this.window.key_press_event.connect(this.on_window_key);
-			this.window.add_events(EventMask.KEY_PRESS_MASK);
 
-			this.entry = new Entry ();
-			this.entry.changed.connect((_) => {
-				this.state.query_changed(entry.get_text());
-			});
+			var css = init_style();
 
+			this.window = this.init_window();
+			this.style(this.window, css);
+			this.entry = this.init_entry();
+			this.style(this.entry, css);
 			this.list_store = this.init_list_store();
 			this.tree_view = this.init_tree_view(this.list_store);
+			this.style(this.tree_view, css);
 
-			// The Box:
-			Gtk.Box box = new Gtk.Box (Gtk.Orientation.VERTICAL, 0);
-			box.pack_start (this.entry, false, true, 10);
-			box.pack_start (this.tree_view, true, true, 10);
+			Gtk.Box box = new Gtk.Box (Gtk.Orientation.VERTICAL, 10);
+			box.pack_start (this.entry, false, true, 0);
+			box.pack_start (this.tree_view, true, true, 0);
+
+			Gtk.Settings.get_default().set("gtk-application-prefer-dark-theme", true);
 
 			this.window.add(box);
 			this.window.show_all ();
@@ -80,6 +74,78 @@ namespace Gsel {
 
 		private Gtk.ListStore init_list_store() {
 			return new Gtk.ListStore(1, typeof (string));
+		}
+
+		private Gtk.Window init_window() {
+			var window = new Gtk.Window ();
+			window.title = "gsel";
+			window.border_width = 10;
+			window.window_position = WindowPosition.CENTER;
+			window.set_default_size (600, 600);
+			window.resizable = false;
+			window.destroy.connect (Gtk.main_quit);
+			window.key_press_event.connect(this.on_window_key);
+			window.add_events(EventMask.KEY_PRESS_MASK);
+			window.focus_on_map = true;
+			window.decorated = false;
+			window.type_hint = Gdk.WindowTypeHint.DIALOG;
+			window.modal = true;
+			window.destroy_with_parent = true;
+			window.skip_pager_hint = true;
+			window.skip_taskbar_hint = true;
+			window.window_position = WindowPosition.CENTER_ON_PARENT;
+
+			window.realize.connect(() => {
+				var screen = Gdk.Screen.get_default();
+				if (screen != null) {
+					var parent = screen.get_active_window();
+					if (parent != null) {
+						var gdk_window = window.get_window();
+						if (gdk_window != null) {
+							// stderr.printf("setting transient\n");
+							gdk_window.set_transient_for(parent);
+						}
+					}
+				}
+			});
+
+			return window;
+		}
+
+		private CssProvider init_style() {
+			var provider = new CssProvider();
+			provider.load_from_data("""
+				window {
+					font-size: 18px;
+					background: rgb(20,20,20);
+				}
+				entry {
+					font-size: 16px;
+					padding: 3px 10px;
+					background: rgb(40,40,40);
+					color: rgb(250, 250, 250);
+				}
+				treeview {
+					color: #bbb;
+					background: rgb(25, 25, 25);
+				}
+				treeview:selected {
+					background: rgb(61, 85, 106);
+				}
+			""");
+			return provider;
+		}
+
+		private void style(Gtk.Widget w, CssProvider css) {
+			w.get_style_context().add_provider(css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION);
+		}
+
+		private Gtk.Entry init_entry() {
+			var entry = new Entry ();
+			entry.changed.connect((_) => {
+				this.state.query_changed(entry.get_text());
+			});
+			return entry;
 		}
 
 		private Gtk.TreeView init_tree_view(Gtk.ListStore store) {
@@ -98,8 +164,7 @@ namespace Gsel {
 			selection.changed.connect (this.on_selection_changed);
 
 			var cell = new Gtk.CellRendererText();
-			cell.set ("weight_set", true);
-			cell.set ("weight", 700);
+			cell.ellipsize = Pango.EllipsizeMode.START;
 
 			view.insert_column_with_attributes (-1, "Item", cell, "markup", 0);
 			return view;
@@ -120,7 +185,6 @@ namespace Gsel {
 				TreePath path = model.get_path(iter);
 				if(path != null) {
 					int idx = path.get_indices()[0];
-					stdout.printf("Selection is currently %d\n", idx);
 					return idx;
 				}
 			}
@@ -144,7 +208,7 @@ namespace Gsel {
 
 			switch (key.keyval) {
 				case Key.Escape:
-					Gtk.main_quit();
+					this.window.destroy();
 					break;
 				case Key.Return:
 					this.state.selection_made();
@@ -183,12 +247,12 @@ namespace Gsel {
 		}
 
 		public void* run() {
-			stdout.printf("running gtk main()\n");
+			// stderr.printf("running gtk main()\n");
 			caml_c_thread_register();
 			Gtk.main();
-			stdout.printf("gtk main() returned\n");
+			// stderr.printf("gtk main() returned\n");
 			if (!this.hidden) {
-				stdout.printf("exiting\n");
+				// stderr.printf("exiting\n");
 				this.state.exit();
 			}
 			caml_c_thread_unregister();
@@ -217,7 +281,7 @@ namespace Gsel {
 
 		public void hide() {
 			Idle.add(() => {
-				stdout.printf("hiding window\n");
+				// stderr.printf("hiding window\n");
 				this.hidden = true;
 				this.window.destroy();
 				return Source.REMOVE;
