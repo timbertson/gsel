@@ -1,4 +1,5 @@
 using Gtk;
+using Gdk;
 
 // ocaml needs to know about threads which will
 // call ocaml callbacks
@@ -42,21 +43,22 @@ namespace Gsel {
 		private State state;
 		private Thread<void*> thread;
 		private Entry entry;
-		private Window window;
+		private Gtk.Window window;
 		private Gtk.ListStore list_store;
 		private TreeView tree_view;
 		private bool hidden;
-		private int selected;
 
 		public UiThread(State state) {
 			this.state = state;
 			this.hidden = false;
-			this.window = new Window ();
+			this.window = new Gtk.Window ();
 			this.window.title = "First GTK+ Program";
 			this.window.border_width = 10;
 			this.window.window_position = WindowPosition.CENTER;
 			this.window.set_default_size (350, 70);
 			this.window.destroy.connect (Gtk.main_quit);
+			this.window.key_press_event.connect(this.on_window_key);
+			this.window.add_events(EventMask.KEY_PRESS_MASK);
 
 			this.entry = new Entry ();
 			this.entry.changed.connect((_) => {
@@ -104,20 +106,80 @@ namespace Gsel {
 		}
 
 		private void on_selection_changed(Gtk.TreeSelection selection) {
+			this.state.selection_changed(this.get_selected_idx(selection));
+		}
+
+		private void on_selection_made(Gtk.TreePath path, TreeViewColumn column) {
+			this.state.selection_made();
+		}
+
+		private int get_selected_idx(Gtk.TreeSelection selection) {
 			Gtk.TreeModel model;
 			Gtk.TreeIter iter;
 			if (selection.get_selected (out model, out iter)) {
 				TreePath path = model.get_path(iter);
 				if(path != null) {
 					int idx = path.get_indices()[0];
-					stdout.printf("Selection changed to %d\n", idx);
-					this.state.selection_changed(idx);
+					stdout.printf("Selection is currently %d\n", idx);
+					return idx;
 				}
 			}
+			return 0;
 		}
 
-		private void on_selection_made(Gtk.TreePath path, TreeViewColumn column) {
-			this.state.selection_made();
+		private void shift_selection(int diff) {
+			var selection = this.tree_view.get_selection();
+			this.set_selection(this.get_selected_idx(selection) + diff);
+		}
+
+		private void set_selection(int idx) {
+			var selection = this.tree_view.get_selection();
+			var path = new TreePath.from_indices(idx);
+			selection.select_path(path);
+		}
+
+		private bool on_window_key(Gdk.EventKey key) {
+			var HANDLED = true;
+			var PROPAGATE = false;
+
+			switch (key.keyval) {
+				case Key.Escape:
+					Gtk.main_quit();
+					break;
+				case Key.Return:
+					this.state.selection_made();
+					break;
+				case Key.Up:
+					this.shift_selection(-1);
+					break;
+				case Key.Down:
+					this.shift_selection(1);
+					break;
+				case Key.Page_Up:
+					this.set_selection(0);
+					break;
+				case Key.Page_Down:
+					var num_items = this.list_store.iter_n_children(null);
+					this.set_selection(int.max(0, num_items - 1));
+					break;
+				default:
+					if ((key.state & ModifierType.CONTROL_MASK) != 0) {
+						switch(key.keyval) {
+							case Key.j:
+								this.shift_selection(1);
+								break;
+							case Key.k:
+								this.shift_selection(-1);
+								break;
+							default:
+								return PROPAGATE;
+						}
+						return HANDLED;
+					} else {
+						return PROPAGATE;
+					}
+			}
+			return HANDLED;
 		}
 
 		public void* run() {
@@ -143,11 +205,12 @@ namespace Gsel {
 		public void results_changed() {
 			Idle.add(() => {
 				this.list_store.clear();
-				this.selected = this.state.iter((item) => {
+				var selected = this.state.iter((item) => {
 					Gtk.TreeIter iter;
 					this.list_store.append(out iter);
 					this.list_store.set(iter, 0, item);
 				});
+				this.set_selection(selected);
 				return Source.REMOVE;
 			});
 		}
@@ -190,14 +253,6 @@ namespace Gsel {
 	public void results_changed(State state) {
 		state.thread->results_changed();
 	}
-
-	/* public void update_results(State state, int selected) { */
-	/* 	string[] owned_items = new string[len]; */
-	/* 	for (int i=0; i<len; i++) { */
-	/* 		owned_items[i] = items[i].dup(); */
-	/* 	} */
-	/* 	state.thread->set_results(owned_items, selected); */
-	/* } */
 
 	public void hide(owned State state) {
 		state.thread->hide();
