@@ -1,16 +1,15 @@
-(* TODO: reshuffle order *)
-let may o f = match o with
+let may f = function
 	| Some o -> f o; ()
 	| None -> ()
 
-let map o f = match o with
+let map f = function
 	| Some o -> Some (f o)
 	| None -> None
 
-let default o d = match o with
+let default d = function
 	| Some o -> o
 	| None -> d
 
-let bind f o = match o with
+let bind f = function
 	| Some o -> f o
 	| None -> None

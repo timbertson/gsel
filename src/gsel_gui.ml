@@ -187,7 +187,7 @@ let gui_inner ~source ~opts ~exit () =
 		let ordered = List.stable_sort (fun a b -> compare (b.result_score) (a.result_score)) recalled in
 		displayed_items |> Shared.update (fun displayed_items ->
 			let items = list_take max_display ordered in
-			let selected_index = (Option.default (match reason, displayed_items.selected_index with
+			let selected_index = Option.default 0 (match reason, displayed_items.selected_index with
 				| New_query, _ -> None
 				| _, 0 -> None
 				| New_input, i ->
@@ -197,7 +197,7 @@ let gui_inner ~source ~opts ~exit () =
 						let matcher = (fun entry -> entry.result_source.input_index = id) in
 						findi displayed_items.items matcher
 					)
-			) 0) in
+			) in
 
 			debug "redraw! %d items of %d" (List.length displayed_items.items) (List.length all_items);
 			flush stdout;
@@ -301,7 +301,7 @@ let gui_loop ~server ~opts () =
 										| None ->
 												(* XXX this is a bit hacky... We're just adopting $DISPLAY
 												 * from the first client that connects... *)
-												Option.may opts.display_env (Unix.putenv "DISPLAY")
+												opts.display_env |> Option.may (Unix.putenv "DISPLAY")
 									in
 									let (_:Thread.t) = Thread.create (fun () ->
 										init_background_thread ();
@@ -340,7 +340,7 @@ let main (): unit =
 
 	let server = ref None in
 	let () = match opts.program_mode with
-		| GSEL_CLIENT -> Option.may (Gsel_client.run opts) exit
+		| GSEL_CLIENT -> (Gsel_client.run opts) |> Option.may exit
 		| GSEL_STANDALONE -> ()
 		| GSEL_SERVER ->
 				let fd = if (

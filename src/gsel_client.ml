@@ -75,5 +75,5 @@ let run opts =
 let main () =
 	init_logging ();
 	let opts = parse_args () in
-	let code = Option.default (run opts) 1 in
+	let code = Option.default 1 (run opts) in
 	exit code
