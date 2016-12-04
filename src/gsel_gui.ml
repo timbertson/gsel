@@ -281,9 +281,8 @@ let gui_inner ~source ~opts ~exit () =
 		(* this will be called exactly once. If invoked by the GUI,
 		 * Gselui.hide() will have no effect *)
 		debug "finish() invoked";
-		source#respond response;
 		terminate_redraw_thread ();
-		debug "exiting";
+		source#respond response;
 		exit response
 	in
 

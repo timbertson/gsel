@@ -21,9 +21,6 @@ namespace Gsel {
 	public delegate void IntFn(int x);
 
 	[CCode (has_target = false)]
-	public delegate void VoidFn();
-
-	[CCode (has_target = false)]
 	public delegate void BoolFn(bool x);
 
 	public void initialize() {
@@ -111,9 +108,66 @@ namespace Gsel {
 				}
 			});
 
+			window.show.connect(() => {
+				window.grab_focus();
+			});
+
 			return window;
 		}
 
+		/*****************************************
+		             Public methods
+		    (called by static methods in Gsel)
+		*****************************************/
+		public void* run() {
+			// stderr.printf("running gtk main()\n");
+			caml_c_thread_register();
+			Gtk.main();
+			caml_c_thread_unregister();
+			// stderr.printf("gtk main() returned\n");
+			return null;
+		}
+
+		public void join() {
+			// stderr.printf("joining GTK thread\n");
+			this.thread.join();
+			// stderr.printf("GTK thread joined\n");
+		}
+
+		public void set_query(owned string text) {
+			Idle.add(() => {
+				this.entry.text = text;
+				return Source.REMOVE;
+			});
+		}
+
+		public void results_changed() {
+			Idle.add(() => {
+				this.list_store.clear();
+				var selected = this.state.iter((item) => {
+					Gtk.TreeIter iter;
+					this.list_store.append(out iter);
+					this.list_store.set(iter, 0, item);
+				});
+				this.set_selection(selected);
+				return Source.REMOVE;
+			});
+		}
+
+		public void hide() {
+			// initiated by ocaml - no need to call complete()
+			// stderr.printf("gsel.thread.hide()\n");
+			Idle.add(() => {
+				this.quit();
+				return Source.REMOVE;
+			});
+		}
+
+
+		/*****************************************
+		             Private methods
+		    (must be called from GUI thread)
+		*****************************************/
 		private CssProvider init_style() {
 			var provider = new CssProvider();
 			provider.load_from_data("""
@@ -153,6 +207,7 @@ namespace Gsel {
 		private Gtk.TreeView init_tree_view(Gtk.ListStore store) {
 			var view = new Gtk.TreeView.with_model(store);
 			view.expand = true;
+			view.can_focus = false;
 			view.enable_search = false;
 			view.fixed_height_mode = true;
 			view.headers_visible = false;
@@ -178,28 +233,25 @@ namespace Gsel {
 
 		private void on_window_destroy(Gtk.Widget window) {
 			// stderr.printf("on_window_destroy\n");
-			this.complete(false);
+			var is_destroyed = true;
+			this.complete(false, is_destroyed);
 		}
 
 		private void on_selection_made(Gtk.TreePath path, TreeViewColumn column) {
 			// stderr.printf("on_selection_made()\n");
 			this.complete(true);
-			this.do_hide();
 		}
 
-		private void cancel() {
-			// stderr.printf("cancel()\n");
-			this.complete(false);
-			this.do_hide();
-		}
-
-		private void complete(bool selection_accepted) {
-			// window gets nulled by this.do_hide(),
-			// to ensure we don't double-call
-			// stderr.printf("complete() [completed=%s]\n", this.completed ? "true" : "false");
+		private void complete(bool selection_accepted, bool is_destroyed = false) {
 			if (!this.completed) {
+				// only respect the first complete - we cancel whenever
+				// the window dies, but that's not necessary if we've already
+				// made a selection.
 				this.completed = true;
 				this.state.completed(selection_accepted);
+				if (!is_destroyed) {
+					this.quit();
+				}
 			}
 		}
 
@@ -233,10 +285,15 @@ namespace Gsel {
 
 			switch (key.keyval) {
 				case Key.Escape:
-					this.cancel();
+					this.complete(false);
 					break;
 				case Key.Return:
-					this.state.completed(true);
+					this.complete(true);
+					break;
+				case Key.Tab:
+				case Key.ISO_Left_Tab:
+					// You know who gets focus? The entry gets focus.
+					this.entry.grab_focus_without_selecting();
 					break;
 				case Key.Up:
 					this.shift_selection(-1);
@@ -271,46 +328,8 @@ namespace Gsel {
 			return HANDLED;
 		}
 
-		public void* run() {
-			// stderr.printf("running gtk main()\n");
-			caml_c_thread_register();
-			Gtk.main();
-			caml_c_thread_unregister();
-			// stderr.printf("gtk main() returned\n");
-			return null;
-		}
-
-		public void set_query(owned string text) {
-			Idle.add(() => {
-				this.entry.text = text;
-				return Source.REMOVE;
-			});
-		}
-
-		public void results_changed() {
-			Idle.add(() => {
-				this.list_store.clear();
-				var selected = this.state.iter((item) => {
-					Gtk.TreeIter iter;
-					this.list_store.append(out iter);
-					this.list_store.set(iter, 0, item);
-				});
-				this.set_selection(selected);
-				return Source.REMOVE;
-			});
-		}
-
-		public void hide() {
-			// initiated by ocaml - no need to call complete()
-			// stderr.printf("gsel.thread.hide()\n");
-			Idle.add(() => {
-				this.do_hide();
-				return Source.REMOVE;
-			});
-		}
-
-		private void do_hide() {
-			// stderr.printf("gsel.thread.do_hide() [window=%x]\n", (int)this.window);
+		private void quit() {
+			// stderr.printf("gsel.thread.quit() [window=%x]\n", (int)this.window);
 			if (this.window != null) {
 				var window = this.window;
 				this.window = null;
@@ -318,14 +337,16 @@ namespace Gsel {
 			}
 			Gtk.main_quit();
 		}
-
-		public void join() {
-			// stderr.printf("joining GTK thread\n");
-			this.thread.join();
-			// stderr.printf("GTK thread joined\n");
-		}
 	}
 
+
+	/*****************************************
+	            Static functions
+	        (called va FFI from ocaml)
+	*****************************************/
+
+	// create a new gui, run it, and return a state
+	// handle (used by all other static functions)
 	public State? show(
 			StringFn query_changed,
 			ResultIterFn iter,
@@ -350,7 +371,6 @@ namespace Gsel {
 	}
 
 	public void hide(owned State state) {
-		// stderr.printf("gsel_hide()\n");
 		state.thread->hide();
 	}
 

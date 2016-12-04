@@ -7,6 +7,7 @@ let destdir = try Some (Unix.getenv "PREFIX") with Not_found -> None
 let () = dispatch begin function
 	| After_rules ->
 	let tags = ["link"; "ocaml"; "native"; "use_gselui"] in
+	(* dep tags [ "./lib/libgselui.so" ]; *)
 	let cmd = [A"-cclib"; A"-L./lib"; A"-cclib"; A"-lgselui"; A"-cclib"; A"-Wl,--export-dynamic"] in
 	let cmd = match destdir with
 		| Some destdir -> cmd @ [A"-cclib"; A("-Wl,-rpath,"^destdir^"/lib")]
