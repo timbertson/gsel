@@ -32,8 +32,7 @@ in stdenv.mkDerivation {
 	};
 	buildPhase = "env PREFIX=$out gup bin/all";
 	installPhase = ''
-		mkdir -p $out
-		cp -r _build/lib $out/lib
+		cp -r _build/lib/*.so $out/lib
 		cp -r --dereference bin $out/bin
 		mkdir -p $out/share
 		cp -r share/{vim,fish} $out/share/

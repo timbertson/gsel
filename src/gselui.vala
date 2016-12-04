@@ -128,8 +128,8 @@ namespace Gsel {
 					color: rgb(250, 250, 250);
 				}
 				treeview {
-					color: #bbb;
 					background: rgb(25, 25, 25);
+					color: rgb(200, 200, 200);
 				}
 				treeview:selected {
 					background: rgb(61, 85, 106);
