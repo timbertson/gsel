@@ -50,13 +50,21 @@ Not appreciably. The whole process takes less than a tenth of a second.
 
 ### Dependencies:
 
-First get `opam`. Then do:
+If you use [nix](http://nixos.org/nixpkgs/), you can just `nix-shell`.
 
-    $ opam install lablgtk
+Otherwise... have a look in nix/default.nix, you'll need at least vala, gtk3, opam and some opam packages (listed in that file).
 
 ### Building:
 
-    $ ./tools/gup bin/gsel
+    $ ./tools/gup compile
+
+### Running:
+
+./bin/gsel
+
+The GUI is implemented as a tiny shared library, which ocaml calls via FFI. Maybe this is crazy, but it was the easiest migration from lablgtk2 to gtk3 (which has no ocaml bindings). See src/gselui.vala for the implementation.
+
+This means you'll need `_build/lib` on $LD_LIBRARY_PATH when running gsel. Or, you can set $PREFIX when compiling, and $PREFIX/lib will be added to gsel's runtime search path.
 
 # Vim integration:
 
