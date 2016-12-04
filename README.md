@@ -43,20 +43,31 @@ terminal, and can be called from anywhere on your desktop (including graphical e
 
 ### Isn't running a program and piping it into another program which opens a new graphical window just for this one task really slow?
 
-Not appreciably. The whole process takes less than a tenth of a second.
-`gsel` nearly always works faster than you can type, which is all that really matters.
+It's possibly _inefficient_, but that doesn't mean it's slow in human terms. Also:
+
+ - gsel grabs terminal input as it loads, so you can start blindly typing and gsel will catch up (\* not supported when run from vim)
+ - gsel is threaded, so it's more responsive than simpler programs which don't do anything until they've read the entire input
+ - for the truly keen, gsel has a --server mode, which allows you to keep the GUI process running and connect to it with `gsel --client`. It even supports systemd socket activation, delaying process start until first use. See `share/systemd/`
 
 # Installation
 
 ### Dependencies:
 
-First get `opam`. Then do:
+If you use [nix](http://nixos.org/nixpkgs/), you can just `nix-shell`.
 
-    $ opam install lablgtk
+Otherwise... have a look in nix/default.nix, you'll need at least vala, gtk3, opam and some opam packages (listed in that file).
 
 ### Building:
 
-    $ ./tools/gup bin/gsel
+    $ ./tools/gup compile
+
+### Running:
+
+./bin/gsel
+
+The GUI is implemented as a tiny shared library, which ocaml calls via FFI. Maybe this is crazy, but it was the easiest migration from lablgtk2 to gtk3 (which has no ocaml bindings). See src/gselui.vala for the implementation.
+
+This means you'll need `_build/lib` on $LD_LIBRARY_PATH when running gsel. Or, you can set $PREFIX when compiling, and $PREFIX/lib will be added to gsel's runtime search path.
 
 # Vim integration:
 
@@ -95,7 +106,7 @@ If you want to create your own bindings, go nuts! The default ones look like thi
     nnoremap <silent> <leader>F :call gsel#FindDo(expand("%:p:h"), ":drop")<cr>
     nnoremap <silent> <C-b> :call gsel#BufferSwitch()<cr>
 
-# Other integration:
+# Other integrations:
 
 Write some, send a pull-request, and get your name here :D
 

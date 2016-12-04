@@ -24,21 +24,13 @@ module SortedSet = struct
 							else head :: (add tail elem)
 end
 
-let rgb a b c = `RGB (a lsl 8, b lsl 8, c lsl 8)
-let grey l = let l = l lsl 8 in `RGB (l,l,l)
-let font_scale = 1204
-
 type redraw_reason = New_input | New_query
-
-let ignore_signal (s:GtkSignal.id) = ignore s
-
 
 class server fd = object
 	method accept : source =
 		let stream, _addr = Unix.accept fd in
 		new socket_input stream
 end
-
 
 let rec list_take n lst = if n = 0 then [] else match lst with
 	| x::xs -> x :: list_take (n-1) xs
@@ -54,7 +46,21 @@ let findi lst pred =
 	in
 	loop 0 lst
 
-let markup_escape = Glib.Markup.escape_text
+let markup_escape =
+	let amp = Str.regexp "&" in
+	let special = Str.regexp "[<>]" in
+	fun s -> s
+		|> Str.global_replace amp "&amp;"
+		|> Str.global_substitute special (function
+			| ">" -> "&gt;"
+			| "<" -> "&lt;"
+			| _ -> failwith "impossible"
+		)
+
+type displayed_items = {
+	items: search_result list;
+	selected_index: int;
+}
 
 let markup str indexes =
 	let open Search.Highlight in
@@ -62,7 +68,7 @@ let markup str indexes =
 	let parts = List.map (function
 		(* XXX define a style somewhere or use programmatic style attributes rather than
 		 * building ugly html strings *)
-		| Highlighted s -> "<span color=\"#eeeeee\" weight=\"bold\" underline=\"low\" underline_color=\"#888888\">" ^ markup_escape s ^ "</span>"
+		| Highlighted s -> "<span color=\"#ffffff\" weight=\"bold\" underline=\"low\" underline_color=\"#dddddd\">" ^ markup_escape s ^ "</span>"
 		| Plain s -> markup_escape s
 	) parts in
 	String.concat "" parts
@@ -111,222 +117,121 @@ let input_loop ~source ~append_query ~modify_all_items ~finish () =
 	)
 ;;
 
-type xlib = {
-	display: Xlib.display;
-	activate: Xlib.window -> unit;
-	get_toplevel: Xlib.window -> Xlib.window;
+module Shared : sig
+	type 'a t
+	val init : ('a ref) -> 'a t
+	val read : 'a t -> 'a
+	val update : ('a -> 'a) -> 'a t -> unit
+	val mutate : ('a ref -> 'r) -> 'a t -> 'r
+	val mutate_full : (Mutex.t -> 'a ref -> 'r) -> 'a t -> 'r
+end = struct
+	type 'a t = Mutex.t * 'a ref
+	let init item = (Mutex.create (), item)
+	let mutate_full fn (m, var) =
+		Mutex.lock m;
+		let rv = try fn m var
+			with e -> (Mutex.unlock m; raise e) in
+		Mutex.unlock m;
+		rv
+	let mutate fn = mutate_full (fun _ r -> fn r)
+	let update fn = mutate (fun r -> r := fn !r)
+	let read v = mutate (!) v
+end
+
+type redraw_state = {
+	dirty : bool;
+	modified : Condition.t;
+	terminated : bool;
 }
 
-type display_state = {
-	xlib : xlib;
-	text_color : Gdk.color;
-}
+let string_of_redraw_state { dirty; terminated } =
+	Printf.sprintf "{ dirty=%b; terminated=%b }" dirty terminated
 
+exception Thread_end
 
-let init_xlib () =
-	let open Xlib in
-	let display = open_display () in
-	let wm_state = xInternAtom display "WM_STATE" false in
-
-	let activate win =
-		let xid = xid_of_window win in
-		debug "Activating window %d" xid;
-
-		(* let xid = Int32.of_int xid in *)
-		(* let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in *)
-		(* XXX None of these work :/ *)
-		(* let () = Gdk.Window.focus parent_win (Int32.of_int 0) in *)
-		(* let () = Gdk.Window.focus parent_win (GMain.Event.get_current_time ()) in *)
-
-		(* Instead, we need to use xlib directly *)
-		let activateWindow = xInternAtom display "_NET_ACTIVE_WINDOW" false in
-		let serial = xLastKnownRequestProcessed display in
-		let screen = xDefaultScreenOfDisplay display in
-		xSendEvent ~dpy:display ~win:(xRootWindowOfScreen screen)
-			~propagate:false ~event_mask:SubstructureNotifyMask
-			(XClientMessageEvCnt {
-				client_message_send_event = true;
-				client_message_display = display;
-				client_message_window = win;
-				client_message_type = activateWindow;
-				client_message_serial = serial;
-				client_message_data = ClientMessageLongs [|
-					1; (* source = app *)
-					Int32.to_int (GMain.Event.get_current_time ());
-					0; 0; 0;
-				|];
-			});
-		(* after giving window input, make sure it's also on top *)
-		xRaiseWindow display win;
-		(* wait for all the X stuff to finish *)
-		xSync display false;
-	in
-
-	let rec get_toplevel win =
-		(* XXX should be able to get the focus window directly via _NET_ACTIVE_WINDOW,
-		* rather than `get_toplevel` hackery *)
-		(* let root = xRootWindowOfScreen screen in *)
-		(* let (_actual_type, _fmt, _n, _bytes, pw) = xGetWindowProperty_window *)
-		(* 	display root wm_state *)
-		(* 	0 0 false AnyPropertyType in *)
-		(* parent_window := Some pw; *)
-
-		let root, parent, _children = xQueryTree display win in
-		debug "window 0x%x has parent 0x%x (root = 0x%x). WM_STATE ? %b"
-			(xid_of_window win)
-			(xid_of_window parent)
-			(xid_of_window root)
-			(hasWindowProperty display win wm_state)
-			;
-			(* If we find a window with WM_STATE property set, stop there.
-			* Otherwise, hope that the toplevel window is the one directly
-			* below the root *)
-		if root == parent || hasWindowProperty display win wm_state then win else get_toplevel parent
-	in
-	{ activate = activate; get_toplevel = get_toplevel; display = display }
-;;
-
-let gui_inner ~source ~display_state ~opts ~exit () =
+let gui_inner ~source ~opts ~exit () =
 	debug "gui running from source: %s" source#repr;
-	let text_color = display_state.text_color in
-	let xlib = display_state.xlib in
-	let window = GWindow.dialog
-		~border_width: 10
-		~screen:(Gdk.Screen.default ())
-		~width: 600
-		~height: 500 (* XXX set window height based on size of entries *)
-		~decorated: false
-		~show:false
-		~modal:true
-		~destroy_with_parent:true
-		~position: `CENTER_ON_PARENT
-		~allow_grow:true
-		~allow_shrink:true
-		(* XXX doesn't seem to do what I'd expect it to ... *)
-		~focus_on_map:true
-		~title:"gsel"
-		() in
-
-	window#set_skip_taskbar_hint true;
-
-	let parent_window = ref None in
-
-	let finish ?event response : unit =
-		source#respond response;
-
-		let () = match (event, !parent_window) with
-			| None ,_ | _, None -> exit response
-			| Some event, Some parent_window ->
-				ignore_signal (window#connect#after#destroy (fun event ->
-					(* "after remove" seems to trigger before the window is
-					* actually, you know, destroyed. So we add an idle action which
-					* hopefully only fires _after_ the window is actually
-					* gone. If we activate the parent window too soon,
-					* the window manager might override that decision when
-					* our window dies
-					*)
-
-					ignore (GMain.Idle.add (fun () ->
-						xlib.activate parent_window;
-						exit response;
-						false
-					)
-				);
-				()
-			));
-			()
-		in
-		window#destroy ()
+	let get_selected_item { items; selected_index } =
+		try Some (List.nth items selected_index)
+		with Failure _ -> None
 	in
 
-	(* Nobody likes you, action area *)
-	window#action_area#destroy ();
+	let all_items = Shared.init (ref (SortedSet.create ())) in
+	let displayed_items = Shared.init (ref { items = []; selected_index = 0 }) in
+	let last_query = Shared.init (ref "") in
 
-	(* adopt the vbox as our main content area *)
-	(* let vbox = GPack.vbox ~spacing: 10 ~packing:window#add () in *)
-	let vbox = window#vbox in
-	vbox#set_spacing 10;
-
-	(* using two extra boxes seems a rather hacky way of getting some padding... *)
-	let input_box = GBin.event_box ~packing:vbox#pack ~border_width:0 () in
-	let input_box_inner = GBin.event_box ~packing:input_box#add ~border_width:6 () in
-	let input = GEdit.entry ~activates_default:true ~packing:input_box_inner#add () in
-	input#set_has_frame false;
-	let columns = new GTree.column_list in
-	let column = columns#add Gobject.Data.string in
-	let list_store = GTree.list_store columns in
-	let tree_view = GTree.view
-		~model:list_store
-		~border_width:0
-		~show:true
-		~enable_search:false
-		~packing:(vbox#pack ~expand:true) () in
-	(* TODO: ellipsize *)
-	let column_view = GTree.view_column
-		~renderer:((GTree.cell_renderer_text [
-			`FOREGROUND_GDK text_color;
-			`SIZE_POINTS 12.0;
-			`YPAD 5;
-		]), [("markup", column)]) () in
-	ignore (tree_view#append_column (column_view));
-	tree_view#set_headers_visible false;
-	let tree_selection = tree_view#selection in
-
-	let all_items = ref (SortedSet.create ()) in
-	let shown_items = ref [] in
-	let last_query = ref "" in
-	let selected_index = ref 0 in
-	let get_selected_item () = List.nth !shown_items !selected_index in
-
-	let items_mutex = Mutex.create () in
-	let with_mutex (type a) : Mutex.t -> (unit -> a) -> a =
-		fun m fn ->
-			Mutex.lock m;
-			let rv = try fn ()
-				with e -> (Mutex.unlock m; raise e) in
-			Mutex.unlock m;
-			rv
-	in
-
-	let update_current_selection i =
+	let selection_changed i =
 		debug "selected index is now %d" i;
-		selected_index := i
-	in
-
-	ignore_signal (tree_selection#connect#changed ~callback:(fun () ->
-		List.iter (fun path ->
-			match GTree.Path.get_indices path with
-				| [|i|] -> update_current_selection i
-				| _ -> assert false
-		) tree_selection#get_selected_rows
-	));
-
-	let set_selection idx =
-		debug "Setting selection to %d" idx;
-		update_current_selection idx;
-		tree_selection#select_path (GTree.Path.create [idx])
-	in
-
-	let clear_selection () =
-		if !shown_items = [] then (
-			selected_index := 0;
-			tree_selection#unselect_all ()
-		) else (
-			set_selection 0
+		displayed_items |> Shared.update (fun shown ->
+			let max_idx = (List.length shown.items) - 1 in
+			{ shown with
+				selected_index = (min i max_idx);
+			}
 		)
 	in
 
-	let shift_selection direction =
-		let new_idx = !selected_index + direction in
-		if new_idx < 0 || new_idx >= (List.length !shown_items) then
-			debug "ignoring shift_selection"
-		else
-			set_selection new_idx
+	let ui_ = ref None in
+	let with_ui fn =
+		match !ui_ with
+			| Some ui -> fn ui
+			| None -> ()
 	in
 
+	let redraw_state = Shared.init (ref {
+		dirty = false;
+		modified = Condition.create ();
+		terminated = false;
+	}) in
+
+	let force_redraw ?state () =
+		let update = (fun state ->
+			with_ui (Gselui.results_changed);
+			{ state with dirty = false }
+		) in
+		match state with
+			| Some state -> state := update !state (* mutex held *)
+			| None -> redraw_state |> Shared.update update
+	in
+
+	let mark_dirty () =
+		redraw_state |> Shared.update (fun state ->
+			Condition.signal state.modified;
+			{ state with dirty = true }
+		)
+	in
+
+	let terminate_redraw_thread () =
+		redraw_state |> Shared.update (fun state ->
+			debug "signalling termination of redraw thread";
+			Condition.signal state.modified;
+			{ state with terminated = true }
+		)
+	in
+
+	let (_:Thread.t) = Thread.create (fun () ->
+		init_background_thread ();
+		let check_alive state =
+			if !state.terminated then raise Thread_end in
+		try
+			while true do
+				redraw_state |> Shared.mutate_full (fun mutex state ->
+					let { modified; dirty } = !state in
+					check_alive state;
+					if dirty then force_redraw ~state ();
+					Condition.wait modified mutex;
+					check_alive state;
+				);
+				(* (* debounce - collect redraws for 1/4 second after touch *) *)
+				let (_, _, _) = Unix.select [] [] [] 0.25 in
+				()
+			done;
+		with Thread_end -> debug "redraw loop terminated"
+	) () in
+
 	let redraw reason =
-		let all_items = with_mutex items_mutex (fun () -> !all_items) in
-		list_store#clear ();
+		let all_items = Shared.read all_items in
+		let last_query = Shared.read last_query in
+		let last_query = String.lowercase_ascii last_query in
 		let max_recall = 2000 in
 		let max_display = 20 in
 
@@ -335,7 +240,7 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 			if n < 1 then [] else match items with
 				| [] -> []
 				| item :: tail ->
-					match Search.score !last_query item with
+					match Search.score last_query item with
 						| Some (score, indexes) -> {result_source = item; result_score = score; match_indexes = indexes} :: (loop (n-1) tail)
 						| None -> loop n tail
 			in
@@ -344,256 +249,156 @@ let gui_inner ~source ~display_state ~opts ~exit () =
 
 		(* after grabbing the first `max_recall` matches by length, score them in descending order *)
 		let ordered = List.stable_sort (fun a b -> compare (b.result_score) (a.result_score)) recalled in
-		shown_items := list_take max_display ordered;
+		displayed_items |> Shared.update (fun displayed_items ->
+			let items = list_take max_display ordered in
+			let selected_index = Option.default 0 (match reason, displayed_items.selected_index with
+				| New_query, _ -> None
+				| _, 0 -> None
+				| New_input, i ->
+					(* maintain selection if possible (but only when selected_index>0) *)
+					get_selected_item (displayed_items) |> Option.bind (fun item ->
+						let id = item.result_source.input_index in
+						let matcher = (fun entry -> entry.result_source.input_index = id) in
+						findi displayed_items.items matcher
+					)
+			) in
 
-		debug "redraw! %d items of %d" (List.length !shown_items) (List.length all_items);
-		flush stdout;
-		(* TODO: overwrite text, rather than always recreating each item? *)
-		let rec loop i entries =
-			match entries with
-				| [] -> ()
-				| result :: tail ->
-					let added = list_store#append () in
-					list_store#set ~row:added ~column (markup result.result_source.text result.match_indexes);
-					let i = i - 1 in
-					if i > 0 then loop i tail else ()
-		in
-		loop max_display !shown_items;
-		let updated_idx = match reason, !selected_index with
-			| New_query, _ -> None
-			| _, 0 -> None
-			| New_input, i ->
-				(* maintain selection if possible (but only when selected_index>0) *)
-				let id = (get_selected_item ()).result_source.input_index in
-				findi !shown_items (fun entry -> entry.result_source.input_index = id)
-		in
-		match updated_idx with
-			| Some i -> set_selection i
-			| None -> clear_selection ()
+			debug "redraw! %d items of %d" (List.length displayed_items.items) (List.length all_items);
+			flush stdout;
+			{ items; selected_index }
+		);
+		match reason with
+			| New_query -> force_redraw ()
+			| New_input -> mark_dirty () (* this happens a lot, do debounce redraws *)
 	in
 
-	let update_query = fun text ->
-		last_query := String.lowercase_ascii text;
+	let query_changed : string -> unit = fun text ->
+		last_query |> Shared.update (fun _ -> text);
 		redraw New_query
 	in
 
-	let append_query text : unit = input#append_text text in
-	ignore_signal (input#connect#notify_text update_query);
-
-	let selection_made ?event () =
-		if !shown_items = [] then () else begin
-			let {result_source=entry;_} = get_selected_item () in
-			debug "selected item[%d]: %s" entry.input_index entry.text;
-			let text = if opts.print_index
-				then string_of_int entry.input_index
-				else entry.text
-			in
-			finish ?event (Success text)
-		end
+	let finish response : unit =
+		(* this will be called exactly once. If invoked by the GUI,
+		 * Gselui.hide() will have no effect *)
+		debug "finish() invoked";
+		terminate_redraw_thread ();
+		source#respond response;
+		exit response
 	in
 
-	let is_ctrl evt = GdkEvent.Key.state evt = [`CONTROL] in
-	(* why are these different to GdkKeysyms._J/_K ? *)
-	let (ctrl_j, _) = GtkData.AccelGroup.parse "<Ctrl>j" in
-	let (ctrl_k, _) = GtkData.AccelGroup.parse "<Ctrl>k" in
+	let completed selection_accepted =
+		debug "completed - selection_accepted = %b" selection_accepted;
+		if selection_accepted then (
+			let displayed_items = displayed_items |> Shared.read in
+			match get_selected_item displayed_items with
+				| Some {result_source=entry;_} ->
+					debug "selected item[%d]: %s" entry.input_index entry.text;
+					let text = if opts.print_index
+						then string_of_int entry.input_index
+						else entry.text
+					in
+					finish (Success text)
+				| None -> ()
+		) else finish Cancelled
+	in
 
-	ignore_signal (window#event#connect#key_press (fun event ->
-		let key = GdkEvent.Key.keyval event in
-		debug "Key: %d" key;
-		let module K = GdkKeysyms in
-		match key with
-			|k when k=K._Escape -> finish ~event Cancelled; true
-			|k when k=K._Return -> selection_made ~event (); true
-			|k when k=K._Up -> shift_selection (-1); true
-			|k when k=K._Down -> shift_selection 1; true
-			|k when k=K._Page_Up -> set_selection 0; true
-			|k when k=K._Page_Down -> set_selection (max 0 ((List.length !shown_items) - 1)); true
-			| _ ->
-				if is_ctrl event then match key with
-					| k when k = ctrl_j -> shift_selection 1; true
-					| k when k = ctrl_k -> shift_selection (-1); true
-					| _ -> false
-				else false
-	));
-	ignore_signal (tree_view#connect#row_activated (fun _ _ -> selection_made ()));
-	ignore_signal (window#event#connect#delete (fun _ -> finish Cancelled; true));
+	let iter fn =
+		let displayed_items = displayed_items |> Shared.read in
+		List.iter (fun item ->
+			fn (markup item.result_source.text item.match_indexes)
+		) displayed_items.items;
+		displayed_items.selected_index
+	in
 
-	(* stylings! *)
-	(* let all_states col = [ *)
-	(* 	`INSENSITIVE, col; *)
-	(* 	`NORMAL, col; *)
-	(* 	`PRELIGHT, col; *)
-	(* 	`SELECTED, col; *)
-	(* ] *)
+	let ui = Gselui.show ~query_changed ~iter ~selection_changed ~completed () in
+	ui_ := Some ui;
 
-
-	let input_bg = grey 40 in
-
-	let ops = new GObj.misc_ops window#as_widget in
-	ops#modify_bg [`NORMAL, grey 10];
-
-	let ops = new GObj.misc_ops vbox#as_widget in
-	ops#modify_bg [`NORMAL, grey 100];
-
-	let ops = new GObj.misc_ops tree_view#as_widget in
-	ops#modify_base [`NORMAL, grey 25];
-	(* let selected_bg = rgb 37 89 134 in (* #255986 *) *)
-	(* let selected_bg = rgb 70 137 196 in (* #4689C4 *) *)
-	let selected_bg = rgb 61 85 106 in (* #3D556A *)
-	let selected_fg = rgb 255 255 255 in
-	ops#modify_base [
-		`SELECTED, selected_bg;
-		`ACTIVE, selected_bg;
-	];
-
-	ops#modify_text [
-		`SELECTED, selected_fg;
-		`ACTIVE, selected_fg;
-	];
-
-	let ops = new GObj.misc_ops input_box#as_widget in
-	ops#modify_bg [`NORMAL, input_bg];
-
-	let ops = new GObj.misc_ops input#as_widget in
-	let font = ops#pango_context#font_description in
-	Pango.Font.modify font ~weight:`BOLD ~size:(10 * font_scale) ();
-	ops#modify_font font;
-	ops#modify_base [`NORMAL, input_bg];
-	ops#modify_text [`NORMAL, grey 250];
-
-	(* https://blogs.gnome.org/jnelson/2010/10/13/those-realize-map-widget-signals/ *)
-	(* window *realize* occurs when the window resource is created *)
-	let misc_events = new GObj.misc_signals (window#as_widget) in
-	ignore_signal (misc_events#realize (fun event ->
-		let open Xlib in
-		let (win, _focus_state) = (xGetInputFocus xlib.display) in
-		parent_window := Option.map win (fun w ->
-			let w = xlib.get_toplevel w in
-			parent_window := Some w;
-			let xid = xid_of_window w in
-			debug "setting transient for %d" xid;
-			let xid = Int32.of_int xid in
-
-			let parent_win = (Gdk.Window.create_foreign (Gdk.Window.native_of_xid xid)) in
-			(* NOTE: this segfaults if we try to do it before window is realized *)
-			let gdk_win = GtkBase.Widget.window (window#as_window) in
-			Gdk.Window.set_transient_for gdk_win parent_win;
-			w
-		);
-	));
-
-	(* window *map* occurs when the window is shown. window.focus_on_map
-	 * doesn't do what you'd think it would, so we manually activate
-	 * our parent window here (using xlib).
-	 * Why not activate our _own_ window? We already have a reference to
-	 * the parent xwindow, and it's not clear how to get an xwindow
-	 * from a gtk one. Since we're modal, it has the same effect.
-	 *)
-	ignore_signal (window#event#connect#map (fun event ->
-		Option.may !parent_window (xlib.activate);
-		false
-	));
-
-	(* ignore_signal (window#event#connect#expose (fun event -> *)
-	(* TODO: grab keyboard? *)
-	(* 	true *)
-	(* )); *)
-
-	window#present();
-
-	let input_complete = ref false in
-	let (_:Thread.t) = Thread.create (fun () ->
+	(
 		init_background_thread ();
+		let input_complete = ref false in
+		debug "input thread running";
 		(* prioritize GUI setup over input processing *)
-		let (_, _, _) = Unix.select [] [] [] 0.2 in
+		let (_, _, _) = Unix.select [] [] [] 0.1 in
 
-		(* input_loop can only mutate state via the stuff we pass it, so
-		* make sure everything here is thread-safe *)
-		let modify_all_items fn = with_mutex items_mutex (fun () ->
-			all_items := fn !all_items
-		) in
-		let append_query = GtkThread.sync (fun text ->
-			append_query text
-		) in
-		let finish = GtkThread.sync (finish ?event:None) in
+		let modify_all_items fn =
+			all_items |> Shared.update fn;
+			redraw New_input
+		in
+
+		let append_query text : unit =
+			let query = last_query |> Shared.mutate (fun last_query ->
+				let query = !last_query ^ text in
+				last_query := query;
+				query
+			) in
+			Gselui.set_query ui query;
+			redraw New_query
+		in
+
 		let () =
+			let finish response =
+				(* if the input_loop triggers finish,
+				 * make sure the GUI ends *)
+				with_ui (Gselui.hide);
+				finish response
+			in
 			try input_loop ~source ~append_query ~modify_all_items ~finish ();
 			with e -> prerr_string (Printexc.to_string e)
 		in
+		debug "input loop complete";
 		input_complete := true;
-		GtkThread.sync redraw New_input;
-	) () in
-
-	(* install periodic redraw handler, which loops until input_loop is done *)
-	let (_:GMain.Timeout.id) = GMain.Timeout.add ~ms:500 ~callback:(fun () ->
-		if not !input_complete
-			then (debug "redraw (timer)"; redraw New_input; true)
-			else false
-	) in
-	()
+		redraw New_input;
+		Gselui.wait ui;
+		debug "Gselui thread ended"
+	)
 ;;
 
 let gui_loop ~server ~opts () =
-	let init_display () =
-		ignore (GMain.init ());
-		let xlib = init_xlib () in
-		let colormap = Gdk.Color.get_system_colormap () in
-		let text_color = Gdk.Color.alloc ~colormap (grey 210) in
-		{
-			xlib = xlib;
-			text_color = text_color;
-		}
-	in
-
 	match server with
 		| Some server -> begin
-				let (_:Thread.t) = Thread.create (fun () ->
-					init_background_thread ();
-					let display_state = ref None in
-					while true do
-						let source : source = server#accept in
-						try (
-							match source#read_options_header with
-								| None -> () (* connection closed; ignore *)
-								| Some opts ->
-										debug "received serialized opts: %s" opts;
-										let opts = run_options_of_sexp (Sexp.of_string opts) in
-										let display_state = match !display_state with
-											| Some display_state -> display_state
-											| None ->
-													(* XXX this is a bit hacky... We're just adopting $DISPLAY
-													 * from the first client that connects... *)
-													Option.may opts.display_env (Unix.putenv "DISPLAY");
-													let d = init_display () in
-													display_state := Some d;
-													d
-										in
-										GtkThread.sync (gui_inner
-											~source ~display_state ~opts
+				let display_state = ref None in
+				while true do
+					let source : source = server#accept in
+					debug "accepted new connection";
+					try (
+						match source#read_options_header with
+							| None -> () (* connection closed; ignore *)
+							| Some opts ->
+									debug "received serialized opts: %s" opts;
+									let opts = run_options_of_sexp (Sexp.of_string opts) in
+									let () = match !display_state with
+										| Some display_state -> display_state
+										| None ->
+												(* XXX this is a bit hacky... We're just adopting $DISPLAY
+												 * from the first client that connects... *)
+												opts.display_env |> Option.may (Unix.putenv "DISPLAY")
+									in
+									let (_:Thread.t) = Thread.create (fun () ->
+										init_background_thread ();
+										gui_inner
+											~source ~opts
 											~exit:(fun _response ->
-												debug "session ended"
-											))
-										()
-						) with e -> (
-							let desc = Printexc.to_string e in
-							debug "Killing client: %s" desc;
-							try (source#respond (Error desc)) with _ -> ()
-						)
-					done
-				) () in
-				GMain.main ()
+												debug "client session ended"
+											) ();
+											debug "gui_inner terminated\n\n\n\n"
+									) () in
+									()
+					) with e -> (
+						let desc = Printexc.to_string e in
+						debug "Killing client: %s" desc;
+						try (source#respond (Error desc)) with _ -> ()
+					)
+				done
 			end
 		| None -> begin
 				with_tty (fun tty ->
 					gui_inner
 						~source:(terminal_source ~tty opts)
-						~display_state:(init_display ())
 						~opts:opts.run_options
 						~exit:(fun response ->
+							debug "exiting";
 							Pervasives.exit (match response with Success _ -> 0 | Cancelled | Error _ -> 1)
-						)
-						();
-					GMain.main ()
+						) ()
 				)
 		end
 ;;
@@ -607,7 +412,7 @@ let main (): unit =
 
 	let server = ref None in
 	let () = match opts.program_mode with
-		| GSEL_CLIENT -> Option.may (Gsel_client.run opts) exit
+		| GSEL_CLIENT -> (Gsel_client.run opts) |> Option.may exit
 		| GSEL_STANDALONE -> ()
 		| GSEL_SERVER ->
 				let fd = if (

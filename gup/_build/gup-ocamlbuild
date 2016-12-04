@@ -1,0 +1,8 @@
+#!bash -eu
+gup --always
+if [[ "$2" = main_gui.* ]]; then
+	gup -u lib/libgselui.so
+fi
+cd ..
+ocamlbuild -use-ocamlfind -build-dir "_build" -no-links -cflag -warn-error -cflag +a "$2"
+ln -sfn "src/$2" $1
