@@ -23,6 +23,9 @@ namespace Gsel {
 	[CCode (has_target = false)]
 	public delegate void VoidFn();
 
+	[CCode (has_target = false)]
+	public delegate void BoolFn(bool x);
+
 	public void initialize() {
 		string[] args = {};
 		unowned string[] _args = args;
@@ -33,8 +36,7 @@ namespace Gsel {
 		StringFn query_changed;
 		ResultIterFn iter;
 		IntFn selection_changed;
-		VoidFn selection_made;
-		VoidFn exit;
+		BoolFn completed;
 		UiThread* thread;
 	}
 
@@ -45,11 +47,11 @@ namespace Gsel {
 		private Gtk.Window window;
 		private Gtk.ListStore list_store;
 		private TreeView tree_view;
-		private bool hidden;
+		private bool completed;
 
 		public UiThread(State state) {
 			this.state = state;
-			this.hidden = false;
+			this.completed = false;
 
 			var css = init_style();
 
@@ -83,7 +85,7 @@ namespace Gsel {
 			window.window_position = WindowPosition.CENTER;
 			window.set_default_size (600, 600);
 			window.resizable = false;
-			window.destroy.connect (Gtk.main_quit);
+			window.destroy.connect(on_window_destroy);
 			window.key_press_event.connect(this.on_window_key);
 			window.add_events(EventMask.KEY_PRESS_MASK);
 			window.focus_on_map = true;
@@ -174,8 +176,31 @@ namespace Gsel {
 			this.state.selection_changed(this.get_selected_idx(selection));
 		}
 
+		private void on_window_destroy(Gtk.Widget window) {
+			// stderr.printf("on_window_destroy\n");
+			this.complete(false);
+		}
+
 		private void on_selection_made(Gtk.TreePath path, TreeViewColumn column) {
-			this.state.selection_made();
+			// stderr.printf("on_selection_made()\n");
+			this.complete(true);
+			this.do_hide();
+		}
+
+		private void cancel() {
+			// stderr.printf("cancel()\n");
+			this.complete(false);
+			this.do_hide();
+		}
+
+		private void complete(bool selection_accepted) {
+			// window gets nulled by this.do_hide(),
+			// to ensure we don't double-call
+			// stderr.printf("complete() [completed=%s]\n", this.completed ? "true" : "false");
+			if (!this.completed) {
+				this.completed = true;
+				this.state.completed(selection_accepted);
+			}
 		}
 
 		private int get_selected_idx(Gtk.TreeSelection selection) {
@@ -208,10 +233,10 @@ namespace Gsel {
 
 			switch (key.keyval) {
 				case Key.Escape:
-					this.window.destroy();
+					this.cancel();
 					break;
 				case Key.Return:
-					this.state.selection_made();
+					this.state.completed(true);
 					break;
 				case Key.Up:
 					this.shift_selection(-1);
@@ -250,12 +275,8 @@ namespace Gsel {
 			// stderr.printf("running gtk main()\n");
 			caml_c_thread_register();
 			Gtk.main();
-			// stderr.printf("gtk main() returned\n");
-			if (!this.hidden) {
-				// stderr.printf("exiting\n");
-				this.state.exit();
-			}
 			caml_c_thread_unregister();
+			// stderr.printf("gtk main() returned\n");
 			return null;
 		}
 
@@ -280,16 +301,28 @@ namespace Gsel {
 		}
 
 		public void hide() {
+			// initiated by ocaml - no need to call complete()
+			// stderr.printf("gsel.thread.hide()\n");
 			Idle.add(() => {
-				// stderr.printf("hiding window\n");
-				this.hidden = true;
-				this.window.destroy();
+				this.do_hide();
 				return Source.REMOVE;
 			});
 		}
 
+		private void do_hide() {
+			// stderr.printf("gsel.thread.do_hide() [window=%x]\n", (int)this.window);
+			if (this.window != null) {
+				var window = this.window;
+				this.window = null;
+				window.destroy();
+			}
+			Gtk.main_quit();
+		}
+
 		public void join() {
+			// stderr.printf("joining GTK thread\n");
 			this.thread.join();
+			// stderr.printf("GTK thread joined\n");
 		}
 	}
 
@@ -297,14 +330,12 @@ namespace Gsel {
 			StringFn query_changed,
 			ResultIterFn iter,
 			IntFn selection_changed,
-			VoidFn selection_made,
-			VoidFn exit) {
+			BoolFn completed) {
 		var state = State () {
 			query_changed = query_changed,
 			iter = iter,
 			selection_changed = selection_changed,
-			selection_made = selection_made,
-			exit = exit
+			completed = completed
 		};
 		state.thread = new UiThread(state);
 		return state;
@@ -319,6 +350,7 @@ namespace Gsel {
 	}
 
 	public void hide(owned State state) {
+		// stderr.printf("gsel_hide()\n");
 		state.thread->hide();
 	}
 

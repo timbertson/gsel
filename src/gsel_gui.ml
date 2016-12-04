@@ -141,13 +141,19 @@ end
 type redraw_state = {
 	dirty : bool;
 	modified : Condition.t;
+	terminated : bool;
 }
+
+let string_of_redraw_state { dirty; terminated } =
+	Printf.sprintf "{ dirty=%b; terminated=%b }" dirty terminated
+
+exception Thread_end
 
 let gui_inner ~source ~opts ~exit () =
 	debug "gui running from source: %s" source#repr;
 	let get_selected_item { items; selected_index } =
 		try Some (List.nth items selected_index)
-		with Not_found -> None
+		with Failure _ -> None
 	in
 
 	let all_items = Shared.init (ref (SortedSet.create ())) in
@@ -174,12 +180,13 @@ let gui_inner ~source ~opts ~exit () =
 	let redraw_state = Shared.init (ref {
 		dirty = false;
 		modified = Condition.create ();
+		terminated = false;
 	}) in
 
 	let force_redraw ?state () =
-		let update = (fun { modified } ->
+		let update = (fun state ->
 			with_ui (Gselui.results_changed);
-			{ modified; dirty = false }
+			{ state with dirty = false }
 		) in
 		match state with
 			| Some state -> state := update !state (* mutex held *)
@@ -187,24 +194,38 @@ let gui_inner ~source ~opts ~exit () =
 	in
 
 	let mark_dirty () =
-		redraw_state |> Shared.update (fun { modified } ->
-			Condition.signal modified;
-			{ modified; dirty = true }
+		redraw_state |> Shared.update (fun state ->
+			Condition.signal state.modified;
+			{ state with dirty = true }
+		)
+	in
+
+	let terminate_redraw_thread () =
+		redraw_state |> Shared.update (fun state ->
+			debug "signalling termination of redraw thread";
+			Condition.signal state.modified;
+			{ state with terminated = true }
 		)
 	in
 
 	let (_:Thread.t) = Thread.create (fun () ->
 		init_background_thread ();
-		while true do
-			redraw_state |> Shared.mutate_full (fun mutex state ->
-				let { modified; dirty } = !state in
-				if dirty then force_redraw ~state ();
-				Condition.wait modified mutex;
-			);
-			(* (* debounce - collect redraws for 1/4 second after touch *) *)
-			let (_, _, _) = Unix.select [] [] [] 0.25 in
-			()
-		done
+		let check_alive state =
+			if !state.terminated then raise Thread_end in
+		try
+			while true do
+				redraw_state |> Shared.mutate_full (fun mutex state ->
+					let { modified; dirty } = !state in
+					check_alive state;
+					if dirty then force_redraw ~state ();
+					Condition.wait modified mutex;
+					check_alive state;
+				);
+				(* (* debounce - collect redraws for 1/4 second after touch *) *)
+				let (_, _, _) = Unix.select [] [] [] 0.25 in
+				()
+			done;
+		with Thread_end -> debug "redraw loop terminated"
 	) () in
 
 	let redraw reason =
@@ -257,26 +278,31 @@ let gui_inner ~source ~opts ~exit () =
 	in
 
 	let finish response : unit =
+		(* this will be called exactly once. If invoked by the GUI,
+		 * Gselui.hide() will have no effect *)
+		debug "finish() invoked";
 		source#respond response;
-		debug "hiding UI";
-		with_ui (Gselui.hide);
+		terminate_redraw_thread ();
+		debug "exiting";
 		exit response
 	in
 
-	let selection_made () =
-		let displayed_items = displayed_items |> Shared.read in
-		match get_selected_item displayed_items with
-			| Some {result_source=entry;_} ->
-				debug "selected item[%d]: %s" entry.input_index entry.text;
-				let text = if opts.print_index
-					then string_of_int entry.input_index
-					else entry.text
-				in
-				finish (Success text)
-			| None -> ()
+	let completed selection_accepted =
+		debug "completed - selection_accepted = %b" selection_accepted;
+		if selection_accepted then (
+			let displayed_items = displayed_items |> Shared.read in
+			match get_selected_item displayed_items with
+				| Some {result_source=entry;_} ->
+					debug "selected item[%d]: %s" entry.input_index entry.text;
+					let text = if opts.print_index
+						then string_of_int entry.input_index
+						else entry.text
+					in
+					finish (Success text)
+				| None -> ()
+		) else finish Cancelled
 	in
 
-	let terminate () = exit Cancelled in
 	let iter fn =
 		let displayed_items = displayed_items |> Shared.read in
 		List.iter (fun item ->
@@ -285,7 +311,7 @@ let gui_inner ~source ~opts ~exit () =
 		displayed_items.selected_index
 	in
 
-	let ui = Gselui.show ~query_changed ~iter ~selection_changed ~selection_made ~terminate () in
+	let ui = Gselui.show ~query_changed ~iter ~selection_changed ~completed () in
 	ui_ := Some ui;
 
 	(
@@ -311,13 +337,20 @@ let gui_inner ~source ~opts ~exit () =
 		in
 
 		let () =
+			let finish response =
+				(* if the input_loop triggers finish,
+				 * make sure the GUI ends *)
+				with_ui (Gselui.hide);
+				finish response
+			in
 			try input_loop ~source ~append_query ~modify_all_items ~finish ();
 			with e -> prerr_string (Printexc.to_string e)
 		in
 		debug "input loop complete";
 		input_complete := true;
 		redraw New_input;
-		Gselui.wait ui
+		Gselui.wait ui;
+		debug "Gselui thread ended"
 	)
 ;;
 
@@ -327,6 +360,7 @@ let gui_loop ~server ~opts () =
 				let display_state = ref None in
 				while true do
 					let source : source = server#accept in
+					debug "accepted new connection";
 					try (
 						match source#read_options_header with
 							| None -> () (* connection closed; ignore *)
@@ -345,8 +379,9 @@ let gui_loop ~server ~opts () =
 										gui_inner
 											~source ~opts
 											~exit:(fun _response ->
-												debug "session ended"
-											) ()
+												debug "client session ended"
+											) ();
+											debug "gui_inner terminated\n\n\n\n"
 									) () in
 									()
 					) with e -> (
