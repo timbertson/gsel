@@ -137,6 +137,7 @@ namespace Gsel {
 		public void set_query(owned string text) {
 			Idle.add(() => {
 				this.entry.text = text;
+				this.entry.set_position(-1);
 				return Source.REMOVE;
 			});
 		}

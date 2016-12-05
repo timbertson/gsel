@@ -221,8 +221,8 @@ let gui_inner ~source ~opts ~exit () =
 					Condition.wait modified mutex;
 					check_alive state;
 				);
-				(* (* debounce - collect redraws for 1/4 second after touch *) *)
-				let (_, _, _) = Unix.select [] [] [] 0.25 in
+				(* (* debounce - collect redraws for moments after touch *) *)
+				let (_, _, _) = Unix.select [] [] [] 0.1 in
 				()
 			done;
 		with Thread_end -> debug "redraw loop terminated"
