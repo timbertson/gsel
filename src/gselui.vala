@@ -45,6 +45,7 @@ namespace Gsel {
 		private Gtk.ListStore list_store;
 		private TreeView tree_view;
 		private bool completed;
+		private bool result = false;
 
 		public UiThread(State state) {
 			this.state = state;
@@ -82,7 +83,6 @@ namespace Gsel {
 			window.window_position = WindowPosition.CENTER;
 			window.set_default_size (600, 600);
 			window.resizable = false;
-			window.destroy.connect(on_window_destroy);
 			window.key_press_event.connect(this.on_window_key);
 			window.add_events(EventMask.KEY_PRESS_MASK);
 			window.focus_on_map = true;
@@ -94,10 +94,12 @@ namespace Gsel {
 			window.skip_taskbar_hint = true;
 			window.window_position = WindowPosition.CENTER_ON_PARENT;
 
+			Gdk.Window parent = null;
+
 			window.realize.connect(() => {
 				var screen = Gdk.Screen.get_default();
 				if (screen != null) {
-					var parent = screen.get_active_window();
+					parent = screen.get_active_window();
 					if (parent != null) {
 						var gdk_window = window.get_window();
 						if (gdk_window != null) {
@@ -110,6 +112,21 @@ namespace Gsel {
 
 			window.show.connect(() => {
 				window.grab_focus();
+			});
+
+			window.destroy.connect(() => {
+				// stderr.printf("on_window_destroy\n");
+				this.window = null;
+				this.complete(false);
+			});
+
+			window.destroy.connect_after(() => {
+				if(parent != null) {
+					// stderr.printf("focus parent!\n");
+					parent.focus(0);
+				}
+				Gtk.main_quit();
+				this.state.completed(this.result);
 			});
 
 			return window;
@@ -159,7 +176,7 @@ namespace Gsel {
 			// initiated by ocaml - no need to call complete()
 			// stderr.printf("gsel.thread.hide()\n");
 			Idle.add(() => {
-				this.quit();
+				this.ensure_closed();
 				return Source.REMOVE;
 			});
 		}
@@ -232,27 +249,19 @@ namespace Gsel {
 			this.state.selection_changed(this.get_selected_idx(selection));
 		}
 
-		private void on_window_destroy(Gtk.Widget window) {
-			// stderr.printf("on_window_destroy\n");
-			var is_destroyed = true;
-			this.complete(false, is_destroyed);
-		}
-
 		private void on_selection_made(Gtk.TreePath path, TreeViewColumn column) {
 			// stderr.printf("on_selection_made()\n");
 			this.complete(true);
 		}
 
-		private void complete(bool selection_accepted, bool is_destroyed = false) {
+		private void complete(bool selection_accepted) {
 			if (!this.completed) {
 				// only respect the first complete - we cancel whenever
 				// the window dies, but that's not necessary if we've already
 				// made a selection.
 				this.completed = true;
-				this.state.completed(selection_accepted);
-				if (!is_destroyed) {
-					this.quit();
-				}
+				this.result = selection_accepted;
+				this.ensure_closed();
 			}
 		}
 
@@ -329,14 +338,13 @@ namespace Gsel {
 			return HANDLED;
 		}
 
-		private void quit() {
-			// stderr.printf("gsel.thread.quit() [window=%x]\n", (int)this.window);
+		private void ensure_closed() {
+			// stderr.printf("gsel.thread.ensure_closed() [window=%x]\n", (int)this.window);
 			if (this.window != null) {
 				var window = this.window;
 				this.window = null;
 				window.destroy();
 			}
-			Gtk.main_quit();
 		}
 	}
 
