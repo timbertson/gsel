@@ -140,8 +140,9 @@ end
 
 type redraw_state = {
 	dirty : bool;
-	modified : Condition.t;
 	terminated : bool;
+	modified : Condition.t;
+	terminated_cond : Condition.t;
 }
 
 let string_of_redraw_state { dirty; terminated } =
@@ -180,6 +181,7 @@ let gui_inner ~source ~opts ~exit () =
 	let redraw_state = Shared.init (ref {
 		dirty = false;
 		modified = Condition.create ();
+		terminated_cond = Condition.create ();
 		terminated = false;
 	}) in
 
@@ -203,7 +205,8 @@ let gui_inner ~source ~opts ~exit () =
 	let terminate_redraw_thread () =
 		redraw_state |> Shared.update (fun state ->
 			debug "signalling termination of redraw thread";
-			Condition.signal state.modified;
+			Condition.broadcast state.modified;
+			Condition.broadcast state.terminated_cond;
 			{ state with terminated = true }
 		)
 	in
@@ -315,7 +318,6 @@ let gui_inner ~source ~opts ~exit () =
 
 	(
 		init_background_thread ();
-		let input_complete = ref false in
 		debug "input thread running";
 		(* prioritize GUI setup over input processing *)
 		let (_, _, _) = Unix.select [] [] [] 0.1 in
@@ -346,9 +348,11 @@ let gui_inner ~source ~opts ~exit () =
 			with e -> prerr_string (Printexc.to_string e)
 		in
 		debug "input loop complete";
-		input_complete := true;
-		redraw New_input;
-		Gselui.wait ui;
+		redraw_state |> Shared.mutate_full (fun mutex state ->
+			while not !state.terminated do
+				Condition.wait !state.terminated_cond mutex
+			done
+		);
 		debug "Gselui thread ended"
 	)
 ;;

@@ -27,14 +27,6 @@ let hide =
 	let hide = foreign ~from "gsel_hide" (state_ptr @-> returning void) in
 	fun state -> hide state.ui_state
 
-let wait =
-	(* wait simply joins on a c thread. At the end of the thread
-	 * caml_c_thread_unregister is called, which requires that the lock *not* be held
-	 * (otherwise it blocks indefintely)
-	 *)
-	let wait = foreign ~from ~release_runtime_lock:true "gsel_wait" (state_ptr @-> returning void) in
-	fun state -> wait state.ui_state
-
 let string_fn = string @-> returning void
 let int_fn = int @-> returning void
 let void_fn = void @-> returning void

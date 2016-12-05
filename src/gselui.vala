@@ -145,12 +145,6 @@ namespace Gsel {
 			return null;
 		}
 
-		public void join() {
-			// stderr.printf("joining GTK thread\n");
-			this.thread.join();
-			// stderr.printf("GTK thread joined\n");
-		}
-
 		public void set_query(owned string text) {
 			Idle.add(() => {
 				this.entry.text = text;
@@ -381,9 +375,5 @@ namespace Gsel {
 
 	public void hide(owned State state) {
 		state.thread->hide();
-	}
-
-	public void wait(State state) {
-		state.thread->join();
 	}
 }
