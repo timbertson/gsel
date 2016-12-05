@@ -111,7 +111,11 @@ namespace Gsel {
 			});
 
 			window.show.connect(() => {
-				window.grab_focus();
+				if(parent != null) {
+					parent.focus(0);
+				} else {
+					window.grab_focus();
+				}
 			});
 
 			window.destroy.connect(() => {
