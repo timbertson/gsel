@@ -6,7 +6,7 @@ let
 	opamDeps = [
 		"ocamlfind" "sexplib" "ppx_sexp_conv" "ounit"
 		"conf-pkg-config" "ctypes" "ctypes-foreign"
-	]
+	] ++ (if shell then ["merlin"] else [])
 	;
 	opamConfig = {
 		packages = opamDeps;

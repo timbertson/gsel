@@ -1,3 +1,3 @@
 #!bash -eu
-gup -u test.byte
-./test.byte
+gup -u _build/test.byte
+_build/test.byte
