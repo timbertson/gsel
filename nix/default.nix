@@ -11,7 +11,13 @@ let
 	opamConfig = {
 		packages = opamDeps;
 		ocamlAttr = "ocaml_4_03";
-		args= ["--verbose" ];
+		args = ["--verbose" ];
+		pkgs = pkgs // {
+			libffi = lib.overrideDerivation pkgs.libffi (o: {
+				# hacky workaround for https://github.com/libffi/libffi/issues/293
+				configureFlags = (o.configureFlags or []) ++ ["CFLAGS=-DFFI_MMAP_EXEC_SELINUX=0"];
+			});
+		};
 	};
 	opamPackages = opam2nix.buildPackageSet opamConfig;
 
