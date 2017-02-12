@@ -28,7 +28,6 @@ in stdenv.mkDerivation {
 		gup
 		gnome3.vala
 		gnome3.gtk
-		(callPackage ./xlib.nix {ocamlPackages = opam2nix.buildPackageSet opamConfig;})
 	] ++ (if shell then [
 		python
 	] else []);
