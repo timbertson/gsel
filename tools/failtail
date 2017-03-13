@@ -1,0 +1,119 @@
+#!/usr/bin/env python
+
+# Copyright (c) 2016 Tim Cuthbertson
+#
+# Permission is hereby granted, free of charge, to any person obtaining
+# a copy of this software and associated documentation files (the
+# "Software"), to deal in the Software without restriction, including
+# without limitation the rights to use, copy, modify, merge, publish,
+# distribute, sublicense, and/or sell copies of the Software, and to
+# permit persons to whom the Software is furnished to do so, subject to
+# the following conditions:
+#
+# The above copyright notice and this permission notice shall be
+# included in all copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+# CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
+# TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+# SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+from __future__ import print_function
+import os,sys,subprocess,optparse
+import time
+
+def status(s):
+	print("\033[36m# [%s]\033[0m" % (s,), file=sys.stderr)
+
+def success(s):
+	print("\033[32m# [%s]\033[0m" % (s,), file=sys.stderr)
+
+def error(s):
+	print("\033[31m# [%s]\033[0m" % (s,), file=sys.stderr)
+
+class Accum(object):
+	def __init__(self, interval):
+		self.printed = 0
+		self.unprinted = 0
+		self.interval = interval
+
+	def update(self, line):
+		self.add(self.size(line))
+
+	def report(self):
+		# print(repr((self.unprinted, self.interval)))
+		while self.unprinted >= self.interval:
+			self.printed += self.interval
+			self.unprinted -= self.interval
+			status("%s %s" % (self.printed,type(self).unit))
+
+	def add(self, n):
+		self.unprinted += n
+		self.report()
+
+class Lines(Accum):
+	unit = 'lines'
+	def size(self, line):
+		return 1
+
+class Seconds(Accum):
+	unit = 'seconds'
+	def __init__(self, *a):
+		super(Seconds, self).__init__(*a)
+		self.last_date = time.time()
+	
+	def size(self, line):
+		new_date = time.time()
+		diff = new_date - self.last_date
+		self.last_date = new_date
+		return diff
+
+def main():
+	p = optparse.OptionParser('Usage: %prog [OPTIONS] <command ...>')
+	p.disable_interspersed_args()
+	p.add_option('--lines', type='int')
+	p.add_option('--seconds', type='float')
+
+	p.add_option('-n')
+	opts, args = p.parse_args()
+
+	status("running %s" % (" ".join(args),))
+	proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=None)
+
+	accums = [
+		(opts.lines, Lines),
+		(opts.seconds, Seconds),
+	]
+	accums = [cls(unit) for unit, cls in accums if unit is not None]
+
+	tail = []
+	total_lines = 0
+	
+	for line in proc.stdout:
+		for accum in accums:
+			accum.update(line)
+		total_lines += 1
+		tail.append(line)
+
+		if opts.n is not None:
+			# trim tail
+			while len(tail) > opts.n:
+				tail.pop(0)
+
+	err = proc.wait()
+	if err != 0:
+		error("failed, status %s - printing %s trailing lines of %s" %
+			(err, len(tail), total_lines))
+		for line in tail:
+			print(line, end='')
+		sys.exit(err)
+	else:
+		success("success; suppressing output")
+
+try:
+	main()
+except KeyboardInterrupt:
+	sys.exit(1)
