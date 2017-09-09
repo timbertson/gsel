@@ -4,8 +4,8 @@ with pkgs;
 let
 	opam2nix = callPackage ./opam2nix-packages.nix {};
 	opamDeps = [
-		"ocamlfind" "sexplib" "ppx_sexp_conv" "ounit"
-		"conf-pkg-config" "ctypes" "ctypes-foreign"
+		"ocamlfind" "sexplib" "ppx_deriving" "ppx_sexp_conv"
+		"ounit" "conf-pkg-config" "ctypes" "ctypes-foreign"
 	];
 	opamConfig = {
 		packages = opamDeps;
