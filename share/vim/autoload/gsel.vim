@@ -67,7 +67,13 @@ endfun
 " pass 0 as extra arg to suppress concatenation of `base` to the result
 fun! gsel#Find(base, ...)
 	" find a file under `base` with gsel and return it
-	let l:rv = s:system("cd ".shellescape(a:base)." && ".g:gsel_file_list_command." 2>/dev/null | ".g:gsel_command . " 2>/dev/null")
+	let l:discard_stderr=" 2>/dev/null "
+	let l:pipe=" | "
+	" use `bash -c` explicitly, to protect against nonstandard shells
+	let l:bash_cmd="cd \"$1\" && ". g:gsel_file_list_command . l:discard_stderr . l:pipe . g:gsel_command . l:discard_stderr
+	let l:shell="bash -c " . shellescape(l:bash_cmd) . " -- ".shellescape(a:base)
+	" put =l:shell " debugging...
+	let l:rv = s:system(l:shell)
 	call gsel#DiscardPendingInput()
 
 	if l:rv == ""
