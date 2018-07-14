@@ -8,7 +8,7 @@ let
 		"ounit" "conf-pkg-config" "ctypes" "ctypes-foreign"
 	];
 	opamConfig = {
-		packages = opamDeps;
+		specs = opam2nix.toSpecs opamDeps;
 		ocamlAttr = "ocaml_4_03";
 		args = ["--verbose" ];
 		pkgs = pkgs // {
